@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { ReleaseInfo, CURRENT_VERSION } from '../services/updaterService';
 import { Language } from '../i18n';
-import { X, Sparkles, Download, ExternalLink, CheckCircle2, ArrowRight } from 'lucide-react';
+import { X, Sparkles, Download, ExternalLink, CheckCircle2, ArrowRight, FolderDown } from 'lucide-react';
 
 interface UpdateModalProps {
   isOpen: boolean;
@@ -26,25 +26,41 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
 
   if (!isOpen || !releaseInfo) return null;
 
-  const handleStartHotUpdate = () => {
-    setIsUpdating(true);
-    setProgress(5);
+  const triggerDownload = (url?: string) => {
+    const targetUrl = url || releaseInfo.downloadUrl || releaseInfo.htmlUrl;
+    if (!targetUrl) return;
 
-    // Simulate progress animation
+    // Create a temporary anchor element to force browser download / navigation
+    const link = document.createElement('a');
+    link.href = targetUrl;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleStartHotUpdate = () => {
+    if (updateComplete) {
+      triggerDownload();
+      return;
+    }
+
+    setIsUpdating(true);
+    setProgress(10);
+
     const interval = setInterval(() => {
       setProgress(prev => {
         if (prev >= 100) {
           clearInterval(interval);
           setUpdateComplete(true);
-          // Open latest release download in external browser
-          if (releaseInfo.downloadUrl) {
-            window.open(releaseInfo.downloadUrl, '_blank');
-          }
+          // Automatically trigger download
+          triggerDownload();
           return 100;
         }
-        return prev + Math.floor(Math.random() * 15) + 8;
+        return prev + Math.floor(Math.random() * 20) + 10;
       });
-    }, 200);
+    }, 150);
   };
 
   return (
@@ -88,7 +104,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             <div className={`p-3 border rounded-lg max-h-36 overflow-y-auto whitespace-pre-wrap leading-relaxed text-[11px] font-mono ${
               isLight ? 'bg-slate-50 border-slate-200 text-slate-600' : 'bg-[#09090c] border-[#18181c] text-zinc-400'
             }`}>
-              {releaseInfo.body || (lang === 'zh' ? '性能提升与缺陷修复。' : 'Performance enhancements and bug fixes.')}
+              {releaseInfo.body || (lang === 'zh' ? '特性更新与缺陷修复。' : 'Performance enhancements and bug fixes.')}
             </div>
           </div>
 
@@ -105,7 +121,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                   ) : (
                     <>
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                      <span className="text-emerald-400">{lang === 'zh' ? '热更新包已就绪，已拉起更新！' : 'Update package ready!'}</span>
+                      <span className="text-emerald-400">{lang === 'zh' ? '安装包下载链接已拉起！点击下方按钮直接下载覆盖升级' : 'Update package ready for install!'}</span>
                     </>
                   )}
                 </span>
@@ -147,11 +163,14 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
 
             <button
               onClick={handleStartHotUpdate}
-              disabled={isUpdating}
-              className="flex-1 py-2 rounded bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-black font-extrabold text-xs tracking-wider transition-all flex items-center justify-center gap-1.5 shadow-lg shadow-amber-950/40"
+              className={`flex-1 py-2 rounded font-extrabold text-xs tracking-wider transition-all flex items-center justify-center gap-1.5 shadow-lg ${
+                updateComplete 
+                  ? 'bg-emerald-500 hover:bg-emerald-400 text-black shadow-emerald-950/40' 
+                  : 'bg-amber-500 hover:bg-amber-400 text-black shadow-amber-950/40'
+              }`}
             >
-              <Download className="w-3.5 h-3.5" />
-              <span>{lang === 'zh' ? '一键热更新升级' : 'HOT UPDATE NOW'}</span>
+              {updateComplete ? <FolderDown className="w-3.5 h-3.5" /> : <Download className="w-3.5 h-3.5" />}
+              <span>{updateComplete ? (lang === 'zh' ? '点击直接下载安装包' : 'DOWNLOAD PACKAGE') : (lang === 'zh' ? '一键热更新升级' : 'HOT UPDATE NOW')}</span>
             </button>
           </div>
 
