@@ -1,3 +1,5 @@
+import packageJson from '../../package.json';
+
 export interface ReleaseInfo {
   version: string;
   name: string;
@@ -7,7 +9,7 @@ export interface ReleaseInfo {
   downloadUrl?: string;
 }
 
-export const CURRENT_VERSION = '0.0.6';
+export const CURRENT_VERSION = packageJson.version;
 
 export function isNewerVersion(current: string, latest: string): boolean {
   const c = current.replace(/^v/, '').trim();
