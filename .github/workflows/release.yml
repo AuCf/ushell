@@ -43,8 +43,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: v__VERSION__
-          releaseName: 'uShell v__VERSION__'
+          tagName: ${{ github.ref_name }}
+          releaseName: 'uShell ${{ github.ref_name }}'
           releaseBody: 'uShell Ultra-Minimalist SSH & SFTP Desktop Client'
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
