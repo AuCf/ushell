@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   publish-tauri:
     permissions:
@@ -40,8 +43,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'uShell ${{ github.ref_name }}'
+          tagName: v__VERSION__
+          releaseName: 'uShell v__VERSION__'
           releaseBody: 'uShell Ultra-Minimalist SSH & SFTP Desktop Client'
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
