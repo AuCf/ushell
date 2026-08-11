@@ -1,6 +1,6 @@
 [package]
 name = "ushell"
-version = "0.0.4"
+version = "0.0.5"
 description = "MaShell - Next-Gen Desktop SSH & Server Manager"
 authors = ["Antigravity"]
 edition = "2021"
