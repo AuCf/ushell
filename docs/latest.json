@@ -1,19 +1,19 @@
 {
-  "version": "0.0.5",
-  "notes": "uShell v0.0.5 正式版更新：支持 AI 对话气泡左右高度对比排版、清除历史会话功能、优化智能 SSH 报错过滤与 GitHub 自动更新。",
-  "pub_date": "2026-08-11T16:37:00Z",
+  "version": "0.0.6",
+  "notes": "uShell v0.0.6 正式版更新：支持一键下载唤起系统默认安装包升级、全平台自动化编译发布与 UI 修复。",
+  "pub_date": "2026-08-11T16:52:00Z",
   "platforms": {
     "windows-x86_64": {
       "signature": "",
-      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.5/uShell_0.0.5_x64-setup.exe"
+      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.6/uShell_0.0.6_x64-setup.exe"
     },
     "darwin-aarch64": {
       "signature": "",
-      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.5/uShell_0.0.5_aarch64.dmg"
+      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.6/uShell_0.0.6_aarch64.dmg"
     },
     "darwin-x86_64": {
       "signature": "",
-      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.5/uShell_0.0.5_x64.dmg"
+      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.6/uShell_0.0.6_x64.dmg"
     }
   }
 }

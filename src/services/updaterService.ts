@@ -7,7 +7,7 @@ export interface ReleaseInfo {
   downloadUrl?: string;
 }
 
-export const CURRENT_VERSION = '0.0.5';
+export const CURRENT_VERSION = '0.0.6';
 
 export function isNewerVersion(current: string, latest: string): boolean {
   const c = current.replace(/^v/, '').trim();
