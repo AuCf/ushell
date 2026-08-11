@@ -1,0 +1,60 @@
+name: Release uShell App
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'macos-latest'
+            args: '--target aarch64-apple-darwin'
+          - platform: 'windows-latest'
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Rust Stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build and Publish Release
+        uses: tauri-apps/tauri-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'uShell ${{ github.ref_name }}'
+          releaseBody: |
+            ## ⚡ uShell ${{ github.ref_name }} Release
+            
+            Ultra-Minimalist Geek SSH & SFTP Desktop Client.
+            
+            ### 📦 Binaries Included:
+            - **Windows**: `.exe` standalone / installer & `.msi`
+            - **macOS**: `.dmg` / `.app` (Apple Silicon & Intel)
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
