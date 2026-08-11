@@ -84,7 +84,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             className="flex items-center gap-1 hover:opacity-80 transition-opacity cursor-pointer group"
             title={hasUpdate ? (lang === 'zh' ? '检测到新版本可用！点击进行热更新升级' : 'New version available! Click to update') : `uShell v0.0.3`}
           >
-            <span className={`text-[9px] font-normal shrink-0 ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>v0.0.3</span>
+            <span className={`text-[9px] font-normal shrink-0 ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>v0.0.4</span>
             {hasUpdate && (
               <span className="relative flex h-2 w-2 shrink-0">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
