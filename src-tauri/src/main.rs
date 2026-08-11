@@ -1,7 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use ssh2::{OpenFlags, OpenType, Session};
+use ssh2::{OpenFlags, OpenType, Session, Sftp};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
@@ -14,7 +14,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static TEMP_KEY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static TERMINAL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static SFTP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const MAX_SFTP_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
+const SSH_CONNECT_PHASE_TIMEOUT_MS: u32 = 15_000;
+const SSH_SESSION_TIMEOUT_MS: u32 = 180_000;
+const SSH_KEEPALIVE_INTERVAL_SECS: u32 = 30;
 
 #[derive(serde::Serialize)]
 struct TestSshResult {
@@ -62,6 +66,7 @@ struct SftpUploadBatchResult {
     directories: usize,
 }
 
+#[derive(Clone)]
 struct SshCredentials {
     host: String,
     port: u16,
@@ -169,15 +174,7 @@ fn connect_tcp(host: &str, port: u16) -> Result<TcpStream, String> {
     let mut last_error = None;
     for address in addresses {
         match TcpStream::connect_timeout(&address, Duration::from_secs(8)) {
-            Ok(stream) => {
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(10)))
-                    .map_err(|error| format!("设置 SSH 读取超时失败: {}", error))?;
-                stream
-                    .set_write_timeout(Some(Duration::from_secs(10)))
-                    .map_err(|error| format!("设置 SSH 写入超时失败: {}", error))?;
-                return Ok(stream);
-            }
+            Ok(stream) => return Ok(stream),
             Err(error) => last_error = Some(error),
         }
     }
@@ -196,7 +193,7 @@ fn connect_and_authenticate(credentials: &SshCredentials) -> Result<Session, Str
     validate_credentials(credentials)?;
     let tcp = connect_tcp(&credentials.host, credentials.port)?;
     let mut session = Session::new().map_err(|error| format!("创建 SSH 会话失败: {}", error))?;
-    session.set_timeout(10_000);
+    session.set_timeout(SSH_CONNECT_PHASE_TIMEOUT_MS);
     session.set_tcp_stream(tcp);
     session
         .handshake()
@@ -223,7 +220,18 @@ fn connect_and_authenticate(credentials: &SshCredentials) -> Result<Session, Str
         return Err("SSH 服务器拒绝了认证凭据".to_string());
     }
 
+    session.set_keepalive(true, SSH_KEEPALIVE_INTERVAL_SECS);
+    session.set_timeout(SSH_SESSION_TIMEOUT_MS);
     Ok(session)
+}
+
+fn send_terminal_keepalive(session: &Session) -> Result<u32, String> {
+    session.set_timeout(SSH_CONNECT_PHASE_TIMEOUT_MS);
+    session.set_blocking(true);
+    let result = session.keepalive_send();
+    session.set_blocking(false);
+    session.set_timeout(SSH_SESSION_TIMEOUT_MS);
+    result.map_err(|error| format!("SSH keepalive 失败: {}", error))
 }
 
 fn run_terminal_session(
@@ -258,6 +266,8 @@ fn run_terminal_session(
 
     session.set_blocking(false);
     let mut output_buffer = [0_u8; 32 * 1024];
+    let mut next_keepalive_at =
+        Instant::now() + Duration::from_secs(u64::from(SSH_KEEPALIVE_INTERVAL_SECS));
     loop {
         for _ in 0..64 {
             match receiver.try_recv() {
@@ -322,6 +332,11 @@ fn run_terminal_session(
                 .exit_status()
                 .map(Some)
                 .map_err(|error| format!("读取远程 Shell 退出状态失败: {}", error));
+        }
+        if Instant::now() >= next_keepalive_at {
+            let wait_seconds = send_terminal_keepalive(&session)?;
+            next_keepalive_at =
+                Instant::now() + Duration::from_secs(u64::from(wait_seconds.max(1)));
         }
         if !received_output {
             thread::sleep(Duration::from_millis(8));
@@ -513,6 +528,15 @@ fn remove_sftp_path_recursive(sftp: &ssh2::Sftp, path: &Path) -> Result<(), Stri
 #[derive(Clone, Default)]
 struct TerminalRegistry(Arc<Mutex<HashMap<String, mpsc::Sender<TerminalCommand>>>>);
 
+struct SftpConnection {
+    credentials: SshCredentials,
+    session: Session,
+    sftp: Sftp,
+}
+
+#[derive(Clone, Default)]
+struct SftpRegistry(Arc<Mutex<HashMap<String, Arc<Mutex<SftpConnection>>>>>);
+
 enum TerminalCommand {
     Input(Vec<u8>),
     Resize { cols: u32, rows: u32 },
@@ -537,6 +561,111 @@ enum TerminalEvent {
         #[serde(rename = "exitStatus")]
         exit_status: Option<i32>,
     },
+}
+
+fn create_sftp_connection(credentials: SshCredentials) -> Result<SftpConnection, String> {
+    let session = connect_and_authenticate(&credentials)?;
+    let sftp = session
+        .sftp()
+        .map_err(|error| format!("初始化 SFTP 会话失败: {}", error))?;
+    Ok(SftpConnection {
+        credentials,
+        session,
+        sftp,
+    })
+}
+
+fn reconnect_sftp(connection: &mut SftpConnection) -> Result<(), String> {
+    *connection = create_sftp_connection(connection.credentials.clone())?;
+    Ok(())
+}
+
+fn prepare_sftp_connection(connection: &mut SftpConnection) -> Result<(), String> {
+    connection.session.set_timeout(SSH_CONNECT_PHASE_TIMEOUT_MS);
+    let keepalive_result = connection.session.keepalive_send();
+    connection.session.set_timeout(SSH_SESSION_TIMEOUT_MS);
+    if keepalive_result.is_err() {
+        reconnect_sftp(connection)?;
+    }
+    Ok(())
+}
+
+fn start_sftp_keepalive(
+    session_id: &str,
+    connection: &Arc<Mutex<SftpConnection>>,
+) -> Result<(), String> {
+    let weak_connection = Arc::downgrade(connection);
+    thread::Builder::new()
+        .name(format!("sftp-keepalive-{}", session_id))
+        .spawn(move || loop {
+            thread::sleep(Duration::from_secs(15));
+            let Some(connection) = weak_connection.upgrade() else {
+                break;
+            };
+            let Ok(mut connection) = connection.lock() else {
+                break;
+            };
+            let _ = prepare_sftp_connection(&mut connection);
+        })
+        .map(|_| ())
+        .map_err(|error| format!("启动 SFTP 保活线程失败: {}", error))
+}
+
+fn is_sftp_transport_error(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    [
+        "transport",
+        "socket",
+        "connection reset",
+        "connection aborted",
+        "broken pipe",
+        "timed out",
+        "timeout",
+        "session closed",
+        "channel closed",
+    ]
+    .iter()
+    .any(|candidate| message.contains(candidate))
+}
+
+fn with_sftp_connection<T, F>(
+    registry: &SftpRegistry,
+    session_id: &str,
+    retry_safe: bool,
+    mut operation: F,
+) -> Result<T, String>
+where
+    F: FnMut(&mut SftpConnection) -> Result<T, String>,
+{
+    let registered = registry
+        .0
+        .lock()
+        .map_err(|_| "SFTP 会话注册表已损坏".to_string())?
+        .get(session_id)
+        .cloned()
+        .ok_or_else(|| "SFTP 会话不存在或已经关闭".to_string())?;
+    let mut connection = registered
+        .lock()
+        .map_err(|_| "SFTP 会话状态已损坏".to_string())?;
+
+    prepare_sftp_connection(&mut connection)?;
+    match operation(&mut connection) {
+        Ok(result) => Ok(result),
+        Err(first_error) if is_sftp_transport_error(&first_error) => {
+            reconnect_sftp(&mut connection).map_err(|reconnect_error| {
+                format!(
+                    "{}；重新建立 SFTP 连接失败: {}",
+                    first_error, reconnect_error
+                )
+            })?;
+            if retry_safe {
+                operation(&mut connection)
+            } else {
+                Err(first_error)
+            }
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn validate_relative_remote_path(path: &str) -> Result<Vec<&str>, String> {
@@ -831,15 +960,16 @@ async fn complete_ssh_input(
 }
 
 #[tauri::command]
-async fn list_sftp_directory(
+async fn open_sftp_session(
+    state: tauri::State<'_, SftpRegistry>,
     host: String,
     port: u16,
     username: String,
     password: Option<String>,
     private_key: Option<String>,
     auth_type: String,
-    path: String,
-) -> Result<SftpDirectoryResult, String> {
+) -> Result<String, String> {
+    let registry = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let credentials = SshCredentials {
             host,
@@ -849,54 +979,92 @@ async fn list_sftp_directory(
             private_key,
             auth_type,
         };
-        let session = connect_and_authenticate(&credentials)?;
-        let sftp = session
-            .sftp()
-            .map_err(|error| format!("初始化 SFTP 会话失败: {}", error))?;
-        let requested_path = if path.trim().is_empty() {
-            "."
-        } else {
-            path.trim()
-        };
-        let resolved_path = sftp
-            .realpath(Path::new(requested_path))
-            .map_err(|error| format!("无法访问远程目录 '{}': {}", requested_path, error))?
-            .to_string_lossy()
-            .replace('\\', "/");
-        let entries = sftp
-            .readdir(Path::new(&resolved_path))
-            .map_err(|error| format!("读取远程目录 '{}' 失败: {}", resolved_path, error))?;
+        let connection = Arc::new(Mutex::new(create_sftp_connection(credentials)?));
+        let session_id = format!(
+            "sftp-{}-{}",
+            std::process::id(),
+            SFTP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        );
+        start_sftp_keepalive(&session_id, &connection)?;
+        registry
+            .0
+            .lock()
+            .map_err(|_| "SFTP 会话注册表已损坏".to_string())?
+            .insert(session_id.clone(), connection);
+        Ok(session_id)
+    })
+    .await
+    .map_err(|error| format!("打开 SFTP 会话任务异常: {}", error))?
+}
 
-        let mut items = entries
-            .into_iter()
-            .filter_map(|(entry_path, stat)| {
-                let name = entry_path.file_name()?.to_string_lossy().to_string();
-                let is_directory = stat.is_dir();
-                Some(SftpItemResult {
-                    path: remote_join(&resolved_path, &name),
-                    name,
-                    is_directory,
-                    size: stat.size.unwrap_or(0),
-                    modified_time: stat
-                        .mtime
-                        .map(|value| value.to_string())
-                        .unwrap_or_default(),
-                    permissions: format_permissions(stat.perm, is_directory),
-                    owner: stat.uid.map(|value| value.to_string()),
+#[tauri::command]
+fn close_sftp_session(
+    state: tauri::State<'_, SftpRegistry>,
+    session_id: String,
+) -> Result<(), String> {
+    state
+        .0
+        .lock()
+        .map_err(|_| "SFTP 会话注册表已损坏".to_string())?
+        .remove(&session_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn list_sftp_directory(
+    state: tauri::State<'_, SftpRegistry>,
+    session_id: String,
+    path: String,
+) -> Result<SftpDirectoryResult, String> {
+    let registry = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        with_sftp_connection(&registry, &session_id, true, |connection| {
+            let sftp = &connection.sftp;
+            let requested_path = if path.trim().is_empty() {
+                "."
+            } else {
+                path.trim()
+            };
+            let resolved_path = sftp
+                .realpath(Path::new(requested_path))
+                .map_err(|error| format!("无法访问远程目录 '{}': {}", requested_path, error))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let entries = sftp
+                .readdir(Path::new(&resolved_path))
+                .map_err(|error| format!("读取远程目录 '{}' 失败: {}", resolved_path, error))?;
+
+            let mut items = entries
+                .into_iter()
+                .filter_map(|(entry_path, stat)| {
+                    let name = entry_path.file_name()?.to_string_lossy().to_string();
+                    let is_directory = stat.is_dir();
+                    Some(SftpItemResult {
+                        path: remote_join(&resolved_path, &name),
+                        name,
+                        is_directory,
+                        size: stat.size.unwrap_or(0),
+                        modified_time: stat
+                            .mtime
+                            .map(|value| value.to_string())
+                            .unwrap_or_default(),
+                        permissions: format_permissions(stat.perm, is_directory),
+                        owner: stat.uid.map(|value| value.to_string()),
+                    })
                 })
+                .collect::<Vec<_>>();
+
+            items.sort_by(|left, right| {
+                right
+                    .is_directory
+                    .cmp(&left.is_directory)
+                    .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+            });
+
+            Ok(SftpDirectoryResult {
+                path: resolved_path,
+                items,
             })
-            .collect::<Vec<_>>();
-
-        items.sort_by(|left, right| {
-            right
-                .is_directory
-                .cmp(&left.is_directory)
-                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
-        });
-
-        Ok(SftpDirectoryResult {
-            path: resolved_path,
-            items,
         })
     })
     .await
@@ -905,15 +1073,12 @@ async fn list_sftp_directory(
 
 #[tauri::command]
 async fn create_sftp_directory(
-    host: String,
-    port: u16,
-    username: String,
-    password: Option<String>,
-    private_key: Option<String>,
-    auth_type: String,
+    state: tauri::State<'_, SftpRegistry>,
+    session_id: String,
     parent_path: String,
     folder_name: String,
 ) -> Result<(), String> {
+    let registry = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let folder_name = folder_name.trim();
         if folder_name.is_empty()
@@ -925,21 +1090,13 @@ async fn create_sftp_directory(
             return Err("目录名称无效，不能包含路径分隔符".to_string());
         }
 
-        let credentials = SshCredentials {
-            host,
-            port,
-            username,
-            password,
-            private_key,
-            auth_type,
-        };
-        let session = connect_and_authenticate(&credentials)?;
-        let sftp = session
-            .sftp()
-            .map_err(|error| format!("初始化 SFTP 会话失败: {}", error))?;
-        let target_path = remote_join(parent_path.trim_end_matches('/'), folder_name);
-        sftp.mkdir(Path::new(&target_path), 0o755)
-            .map_err(|error| format!("创建远程目录 '{}' 失败: {}", target_path, error))
+        with_sftp_connection(&registry, &session_id, false, |connection| {
+            let target_path = remote_join(parent_path.trim_end_matches('/'), folder_name);
+            connection
+                .sftp
+                .mkdir(Path::new(&target_path), 0o755)
+                .map_err(|error| format!("创建远程目录 '{}' 失败: {}", target_path, error))
+        })
     })
     .await
     .map_err(|error| format!("SFTP 新建目录任务异常: {}", error))?
@@ -947,17 +1104,14 @@ async fn create_sftp_directory(
 
 #[tauri::command]
 async fn upload_sftp_file(
-    host: String,
-    port: u16,
-    username: String,
-    password: Option<String>,
-    private_key: Option<String>,
-    auth_type: String,
+    state: tauri::State<'_, SftpRegistry>,
+    session_id: String,
     parent_path: String,
     relative_path: String,
     content: Vec<u8>,
     overwrite: bool,
 ) -> Result<(), String> {
+    let registry = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let path_components = validate_relative_remote_path(&relative_path)?;
         if content.len() > MAX_SFTP_TRANSFER_BYTES {
@@ -967,45 +1121,36 @@ async fn upload_sftp_file(
             ));
         }
 
-        let credentials = SshCredentials {
-            host,
-            port,
-            username,
-            password,
-            private_key,
-            auth_type,
-        };
-        let session = connect_and_authenticate(&credentials)?;
-        let sftp = session
-            .sftp()
-            .map_err(|error| format!("初始化 SFTP 会话失败: {}", error))?;
-        let file_name = path_components
-            .last()
-            .ok_or_else(|| "上传文件名称无效".to_string())?;
-        let directory_path = path_components[..path_components.len() - 1].join("/");
-        let upload_parent = if directory_path.is_empty() {
-            parent_path.trim_end_matches('/').to_string()
-        } else {
-            ensure_remote_directory(&sftp, &parent_path, &directory_path)?
-        };
-        let target_path = remote_join(&upload_parent, file_name);
+        with_sftp_connection(&registry, &session_id, false, |connection| {
+            let sftp = &connection.sftp;
+            let file_name = path_components
+                .last()
+                .ok_or_else(|| "上传文件名称无效".to_string())?;
+            let directory_path = path_components[..path_components.len() - 1].join("/");
+            let upload_parent = if directory_path.is_empty() {
+                parent_path.trim_end_matches('/').to_string()
+            } else {
+                ensure_remote_directory(sftp, &parent_path, &directory_path)?
+            };
+            let target_path = remote_join(&upload_parent, file_name);
 
-        if !overwrite && sftp.stat(Path::new(&target_path)).is_ok() {
-            return Err(format!("SFTP_FILE_EXISTS:{}", relative_path));
-        }
+            if !overwrite && sftp.stat(Path::new(&target_path)).is_ok() {
+                return Err(format!("SFTP_FILE_EXISTS:{}", relative_path));
+            }
 
-        let mut remote_file = sftp
-            .open_mode(
-                Path::new(&target_path),
-                OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
-                0o644,
-                OpenType::File,
-            )
-            .map_err(|error| format!("打开远程文件 '{}' 失败: {}", target_path, error))?;
-        remote_file
-            .write_all(&content)
-            .and_then(|_| remote_file.flush())
-            .map_err(|error| format!("上传远程文件 '{}' 失败: {}", target_path, error))
+            let mut remote_file = sftp
+                .open_mode(
+                    Path::new(&target_path),
+                    OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
+                    0o644,
+                    OpenType::File,
+                )
+                .map_err(|error| format!("打开远程文件 '{}' 失败: {}", target_path, error))?;
+            remote_file
+                .write_all(&content)
+                .and_then(|_| remote_file.flush())
+                .map_err(|error| format!("上传远程文件 '{}' 失败: {}", target_path, error))
+        })
     })
     .await
     .map_err(|error| format!("SFTP 上传任务异常: {}", error))?
@@ -1013,35 +1158,21 @@ async fn upload_sftp_file(
 
 #[tauri::command]
 async fn create_sftp_directory_tree(
-    host: String,
-    port: u16,
-    username: String,
-    password: Option<String>,
-    private_key: Option<String>,
-    auth_type: String,
+    state: tauri::State<'_, SftpRegistry>,
+    session_id: String,
     parent_path: String,
     mut directories: Vec<String>,
 ) -> Result<(), String> {
+    let registry = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let credentials = SshCredentials {
-            host,
-            port,
-            username,
-            password,
-            private_key,
-            auth_type,
-        };
-        let session = connect_and_authenticate(&credentials)?;
-        let sftp = session
-            .sftp()
-            .map_err(|error| format!("初始化 SFTP 会话失败: {}", error))?;
-
         directories.sort();
         directories.dedup();
-        for directory in directories {
-            ensure_remote_directory(&sftp, &parent_path, &directory)?;
-        }
-        Ok(())
+        with_sftp_connection(&registry, &session_id, false, |connection| {
+            for directory in &directories {
+                ensure_remote_directory(&connection.sftp, &parent_path, directory)?;
+            }
+            Ok(())
+        })
     })
     .await
     .map_err(|error| format!("SFTP 创建目录树任务异常: {}", error))?
@@ -1049,16 +1180,13 @@ async fn create_sftp_directory_tree(
 
 #[tauri::command]
 async fn upload_sftp_local_paths(
-    host: String,
-    port: u16,
-    username: String,
-    password: Option<String>,
-    private_key: Option<String>,
-    auth_type: String,
+    state: tauri::State<'_, SftpRegistry>,
+    session_id: String,
     parent_path: String,
     local_paths: Vec<String>,
     overwrite: bool,
 ) -> Result<SftpUploadBatchResult, String> {
+    let registry = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         if local_paths.is_empty() {
             return Err("没有收到需要上传的本地文件或目录".to_string());
@@ -1087,61 +1215,52 @@ async fn upload_sftp_local_paths(
             }
         }
 
-        let credentials = SshCredentials {
-            host,
-            port,
-            username,
-            password,
-            private_key,
-            auth_type,
-        };
-        let session = connect_and_authenticate(&credentials)?;
-        let sftp = session
-            .sftp()
-            .map_err(|error| format!("初始化 SFTP 会话失败: {}", error))?;
-
-        if !overwrite {
-            let conflicts: Vec<&str> = files
-                .iter()
-                .filter_map(|(_, relative_path)| {
-                    let target_path = remote_join(parent_path.trim_end_matches('/'), relative_path);
-                    sftp.stat(Path::new(&target_path))
-                        .is_ok()
-                        .then_some(relative_path.as_str())
-                })
-                .collect();
-            if !conflicts.is_empty() {
-                return Err(format!("SFTP_FILES_EXIST:{}", conflicts.join("\n")));
+        with_sftp_connection(&registry, &session_id, false, |connection| {
+            let sftp = &connection.sftp;
+            if !overwrite {
+                let conflicts: Vec<&str> = files
+                    .iter()
+                    .filter_map(|(_, relative_path)| {
+                        let target_path =
+                            remote_join(parent_path.trim_end_matches('/'), relative_path);
+                        sftp.stat(Path::new(&target_path))
+                            .is_ok()
+                            .then_some(relative_path.as_str())
+                    })
+                    .collect();
+                if !conflicts.is_empty() {
+                    return Err(format!("SFTP_FILES_EXIST:{}", conflicts.join("\n")));
+                }
             }
-        }
 
-        directories.sort();
-        directories.dedup();
-        for directory in &directories {
-            ensure_remote_directory(&sftp, &parent_path, directory)?;
-        }
+            directories.sort();
+            directories.dedup();
+            for directory in &directories {
+                ensure_remote_directory(sftp, &parent_path, directory)?;
+            }
 
-        for (local_path, relative_path) in &files {
-            let target_path = remote_join(parent_path.trim_end_matches('/'), relative_path);
-            let mut local_file = fs::File::open(local_path).map_err(|error| {
-                format!("打开本地文件 '{}' 失败: {}", local_path.display(), error)
-            })?;
-            let mut remote_file = sftp
-                .open_mode(
-                    Path::new(&target_path),
-                    OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
-                    0o644,
-                    OpenType::File,
-                )
-                .map_err(|error| format!("打开远程文件 '{}' 失败: {}", target_path, error))?;
-            std::io::copy(&mut local_file, &mut remote_file)
-                .and_then(|_| remote_file.flush())
-                .map_err(|error| format!("上传远程文件 '{}' 失败: {}", target_path, error))?;
-        }
+            for (local_path, relative_path) in &files {
+                let target_path = remote_join(parent_path.trim_end_matches('/'), relative_path);
+                let mut local_file = fs::File::open(local_path).map_err(|error| {
+                    format!("打开本地文件 '{}' 失败: {}", local_path.display(), error)
+                })?;
+                let mut remote_file = sftp
+                    .open_mode(
+                        Path::new(&target_path),
+                        OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
+                        0o644,
+                        OpenType::File,
+                    )
+                    .map_err(|error| format!("打开远程文件 '{}' 失败: {}", target_path, error))?;
+                std::io::copy(&mut local_file, &mut remote_file)
+                    .and_then(|_| remote_file.flush())
+                    .map_err(|error| format!("上传远程文件 '{}' 失败: {}", target_path, error))?;
+            }
 
-        Ok(SftpUploadBatchResult {
-            uploaded: files.len(),
-            directories: directories.len(),
+            Ok(SftpUploadBatchResult {
+                uploaded: files.len(),
+                directories: directories.len(),
+            })
         })
     })
     .await
@@ -1150,29 +1269,16 @@ async fn upload_sftp_local_paths(
 
 #[tauri::command]
 async fn delete_sftp_path(
-    host: String,
-    port: u16,
-    username: String,
-    password: Option<String>,
-    private_key: Option<String>,
-    auth_type: String,
+    state: tauri::State<'_, SftpRegistry>,
+    session_id: String,
     path: String,
 ) -> Result<(), String> {
+    let registry = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let remote_path = validate_remote_operation_path(&path)?;
-        let credentials = SshCredentials {
-            host,
-            port,
-            username,
-            password,
-            private_key,
-            auth_type,
-        };
-        let session = connect_and_authenticate(&credentials)?;
-        let sftp = session
-            .sftp()
-            .map_err(|error| format!("初始化 SFTP 会话失败: {}", error))?;
-        remove_sftp_path_recursive(&sftp, Path::new(remote_path))
+        with_sftp_connection(&registry, &session_id, false, |connection| {
+            remove_sftp_path_recursive(&connection.sftp, Path::new(remote_path))
+        })
     })
     .await
     .map_err(|error| format!("SFTP 删除任务异常: {}", error))?
@@ -1180,14 +1286,11 @@ async fn delete_sftp_path(
 
 #[tauri::command]
 async fn download_sftp_directory(
-    host: String,
-    port: u16,
-    username: String,
-    password: Option<String>,
-    private_key: Option<String>,
-    auth_type: String,
+    state: tauri::State<'_, SftpRegistry>,
+    session_id: String,
     path: String,
 ) -> Result<SftpDownloadResult, String> {
+    let registry = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let remote_path = validate_remote_operation_path(&path)?;
         let (parent_path, directory_name) = remote_path
@@ -1198,61 +1301,55 @@ async fn download_sftp_directory(
             return Err("无法识别需要下载的远程目录名称".to_string());
         }
 
-        let credentials = SshCredentials {
-            host,
-            port,
-            username,
-            password,
-            private_key,
-            auth_type,
-        };
-        let session = connect_and_authenticate(&credentials)?;
-        let mut channel = session
-            .channel_session()
-            .map_err(|error| format!("创建目录归档通道失败: {}", error))?;
-        let command = format!(
-            "cd -- {} && tar -czf - -- {}",
-            shell_quote(parent_path),
-            shell_quote(directory_name)
-        );
-        channel
-            .exec(&command)
-            .map_err(|error| format!("启动远程目录归档失败: {}", error))?;
+        with_sftp_connection(&registry, &session_id, true, |connection| {
+            let mut channel = connection
+                .session
+                .channel_session()
+                .map_err(|error| format!("创建目录归档通道失败: {}", error))?;
+            let command = format!(
+                "cd -- {} && tar -czf - -- {}",
+                shell_quote(parent_path),
+                shell_quote(directory_name)
+            );
+            channel
+                .exec(&command)
+                .map_err(|error| format!("启动远程目录归档失败: {}", error))?;
 
-        let mut content = Vec::new();
-        Read::by_ref(&mut channel)
-            .take((MAX_SFTP_TRANSFER_BYTES + 1) as u64)
-            .read_to_end(&mut content)
-            .map_err(|error| format!("读取远程目录归档失败: {}", error))?;
-        if content.len() > MAX_SFTP_TRANSFER_BYTES {
-            let _ = channel.close();
-            return Err(format!(
-                "目录压缩后超过 {} MB 下载限制",
-                MAX_SFTP_TRANSFER_BYTES / 1024 / 1024
-            ));
-        }
+            let mut content = Vec::new();
+            Read::by_ref(&mut channel)
+                .take((MAX_SFTP_TRANSFER_BYTES + 1) as u64)
+                .read_to_end(&mut content)
+                .map_err(|error| format!("读取远程目录归档失败: {}", error))?;
+            if content.len() > MAX_SFTP_TRANSFER_BYTES {
+                let _ = channel.close();
+                return Err(format!(
+                    "目录压缩后超过 {} MB 下载限制",
+                    MAX_SFTP_TRANSFER_BYTES / 1024 / 1024
+                ));
+            }
 
-        let mut stderr = String::new();
-        channel
-            .stderr()
-            .read_to_string(&mut stderr)
-            .map_err(|error| format!("读取远程目录归档错误失败: {}", error))?;
-        channel
-            .wait_close()
-            .map_err(|error| format!("关闭目录归档通道失败: {}", error))?;
-        let exit_status = channel
-            .exit_status()
-            .map_err(|error| format!("读取目录归档状态失败: {}", error))?;
-        if exit_status != 0 {
-            return Err(format!(
-                "远程目录打包失败，请确认服务器已安装 tar: {}",
-                stderr.trim()
-            ));
-        }
+            let mut stderr = String::new();
+            channel
+                .stderr()
+                .read_to_string(&mut stderr)
+                .map_err(|error| format!("读取远程目录归档错误失败: {}", error))?;
+            channel
+                .wait_close()
+                .map_err(|error| format!("关闭目录归档通道失败: {}", error))?;
+            let exit_status = channel
+                .exit_status()
+                .map_err(|error| format!("读取目录归档状态失败: {}", error))?;
+            if exit_status != 0 {
+                return Err(format!(
+                    "远程目录打包失败，请确认服务器已安装 tar: {}",
+                    stderr.trim()
+                ));
+            }
 
-        Ok(SftpDownloadResult {
-            name: format!("{}.tar.gz", directory_name),
-            content,
+            Ok(SftpDownloadResult {
+                name: format!("{}.tar.gz", directory_name),
+                content,
+            })
         })
     })
     .await
@@ -1261,62 +1358,50 @@ async fn download_sftp_directory(
 
 #[tauri::command]
 async fn download_sftp_file(
-    host: String,
-    port: u16,
-    username: String,
-    password: Option<String>,
-    private_key: Option<String>,
-    auth_type: String,
+    state: tauri::State<'_, SftpRegistry>,
+    session_id: String,
     path: String,
 ) -> Result<SftpDownloadResult, String> {
+    let registry = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let credentials = SshCredentials {
-            host,
-            port,
-            username,
-            password,
-            private_key,
-            auth_type,
-        };
-        let session = connect_and_authenticate(&credentials)?;
-        let sftp = session
-            .sftp()
-            .map_err(|error| format!("初始化 SFTP 会话失败: {}", error))?;
-        let remote_path = Path::new(path.trim());
-        let stat = sftp
-            .stat(remote_path)
-            .map_err(|error| format!("读取远程文件信息失败: {}", error))?;
-        if stat.is_dir() {
-            return Err("不能将目录作为单个文件下载".to_string());
-        }
-        if stat.size.unwrap_or(0) > MAX_SFTP_TRANSFER_BYTES as u64 {
-            return Err(format!(
-                "单个下载文件不能超过 {} MB",
-                MAX_SFTP_TRANSFER_BYTES / 1024 / 1024
-            ));
-        }
+        with_sftp_connection(&registry, &session_id, true, |connection| {
+            let sftp = &connection.sftp;
+            let remote_path = Path::new(path.trim());
+            let stat = sftp
+                .stat(remote_path)
+                .map_err(|error| format!("读取远程文件信息失败: {}", error))?;
+            if stat.is_dir() {
+                return Err("不能将目录作为单个文件下载".to_string());
+            }
+            if stat.size.unwrap_or(0) > MAX_SFTP_TRANSFER_BYTES as u64 {
+                return Err(format!(
+                    "单个下载文件不能超过 {} MB",
+                    MAX_SFTP_TRANSFER_BYTES / 1024 / 1024
+                ));
+            }
 
-        let name = remote_path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| "无法识别远程文件名称".to_string())?
-            .to_string();
-        let remote_file = sftp
-            .open(remote_path)
-            .map_err(|error| format!("打开远程文件 '{}' 失败: {}", path.trim(), error))?;
-        let mut content = Vec::with_capacity(stat.size.unwrap_or(0) as usize);
-        remote_file
-            .take((MAX_SFTP_TRANSFER_BYTES + 1) as u64)
-            .read_to_end(&mut content)
-            .map_err(|error| format!("下载远程文件 '{}' 失败: {}", path.trim(), error))?;
-        if content.len() > MAX_SFTP_TRANSFER_BYTES {
-            return Err(format!(
-                "下载内容超过 {} MB 限制",
-                MAX_SFTP_TRANSFER_BYTES / 1024 / 1024
-            ));
-        }
+            let name = remote_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| "无法识别远程文件名称".to_string())?
+                .to_string();
+            let remote_file = sftp
+                .open(remote_path)
+                .map_err(|error| format!("打开远程文件 '{}' 失败: {}", path.trim(), error))?;
+            let mut content = Vec::with_capacity(stat.size.unwrap_or(0) as usize);
+            remote_file
+                .take((MAX_SFTP_TRANSFER_BYTES + 1) as u64)
+                .read_to_end(&mut content)
+                .map_err(|error| format!("下载远程文件 '{}' 失败: {}", path.trim(), error))?;
+            if content.len() > MAX_SFTP_TRANSFER_BYTES {
+                return Err(format!(
+                    "下载内容超过 {} MB 限制",
+                    MAX_SFTP_TRANSFER_BYTES / 1024 / 1024
+                ));
+            }
 
-        Ok(SftpDownloadResult { name, content })
+            Ok(SftpDownloadResult { name, content })
+        })
     })
     .await
     .map_err(|error| format!("SFTP 下载任务异常: {}", error))?
@@ -1325,6 +1410,7 @@ async fn download_sftp_file(
 fn main() {
     tauri::Builder::default()
         .manage(TerminalRegistry::default())
+        .manage(SftpRegistry::default())
         .invoke_handler(tauri::generate_handler![
             test_ssh_connection,
             execute_ssh_command,
@@ -1333,6 +1419,8 @@ fn main() {
             write_ssh_terminal,
             resize_ssh_terminal,
             close_ssh_terminal,
+            open_sftp_session,
+            close_sftp_session,
             list_sftp_directory,
             create_sftp_directory,
             create_sftp_directory_tree,

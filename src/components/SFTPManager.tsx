@@ -6,7 +6,7 @@ import { Language, i18n } from '../i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { Download, Loader2, RefreshCw, Trash2 } from 'lucide-react';
+import { Download, Eye, EyeOff, Loader2, RefreshCw, Trash2 } from 'lucide-react';
 
 const MAX_TRANSFER_BYTES = 64 * 1024 * 1024;
 
@@ -113,7 +113,9 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
     total?: number;
   } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [showHiddenFiles, setShowHiddenFiles] = useState(false);
   const requestSequence = useRef(0);
+  const sftpSessionIdRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -155,13 +157,20 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
     authType: server.authType
   });
 
-  const loadDirectory = async (requestedPath: string) => {
+  const sessionArgs = () => {
+    const sessionId = sftpSessionIdRef.current;
+    if (!sessionId) throw new Error(lang === 'zh' ? 'SFTP 会话尚未连接' : 'SFTP session is not connected');
+    return { sessionId };
+  };
+
+  const loadDirectory = async (requestedPath: string, sessionId = sftpSessionIdRef.current) => {
     const requestId = ++requestSequence.current;
     setIsLoading(true);
     setError('');
     try {
+      if (!sessionId) throw new Error(lang === 'zh' ? 'SFTP 会话尚未连接' : 'SFTP session is not connected');
       const result = await invoke<SftpDirectoryResult>('list_sftp_directory', {
-        ...connectionArgs(),
+        sessionId,
         path: requestedPath
       });
       if (requestId !== requestSequence.current) return;
@@ -183,14 +192,48 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
   };
 
   useEffect(() => {
+    let cancelled = false;
+    let ownedSessionId: string | null = null;
+    requestSequence.current += 1;
+    sftpSessionIdRef.current = null;
     setCurrentPath('.');
     setFiles([]);
-    loadDirectory('.');
+    setShowHiddenFiles(false);
+    setError('');
+    setIsLoading(true);
+
+    const connect = async () => {
+      try {
+        const sessionId = await invoke<string>('open_sftp_session', connectionArgs());
+        ownedSessionId = sessionId;
+        if (cancelled) {
+          void invoke('close_sftp_session', { sessionId });
+          return;
+        }
+        sftpSessionIdRef.current = sessionId;
+        await loadDirectory('.', sessionId);
+      } catch (err: any) {
+        if (cancelled) return;
+        setError(typeof err === 'string' ? err : (err?.message || String(err)));
+        setIsLoading(false);
+      }
+    };
+
+    void connect();
+    return () => {
+      cancelled = true;
+      requestSequence.current += 1;
+      if (sftpSessionIdRef.current === ownedSessionId) sftpSessionIdRef.current = null;
+      if (ownedSessionId) void invoke('close_sftp_session', { sessionId: ownedSessionId });
+    };
   }, [server.id, server.host, server.port, server.username, server.authType, server.password, server.privateKey]);
 
   const parentPath = currentPath === '/'
     ? null
     : (currentPath.slice(0, currentPath.lastIndexOf('/')) || '/');
+  const filteredFiles = showHiddenFiles
+    ? files
+    : files.filter(file => !file.name.startsWith('.'));
   const visibleFiles: SFTPItem[] = parentPath
     ? [{
         name: '..',
@@ -199,8 +242,8 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
         size: 0,
         modifiedTime: '-',
         permissions: 'drwxr-xr-x'
-      }, ...files]
-    : files;
+      }, ...filteredFiles]
+    : filteredFiles;
 
   const handleItemClick = (item: SFTPItem) => {
     setSelectedItem(item.name);
@@ -213,7 +256,7 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
     setError('');
     try {
       await invoke('create_sftp_directory', {
-        ...connectionArgs(),
+        ...sessionArgs(),
         parentPath: currentPath,
         folderName
       });
@@ -225,7 +268,7 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
 
   const uploadFile = async (relativePath: string, content: number[], overwrite: boolean) => {
     await invoke('upload_sftp_file', {
-      ...connectionArgs(),
+      ...sessionArgs(),
       parentPath: currentPath,
       relativePath,
       content,
@@ -247,7 +290,7 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
       if (directories.length > 0) {
         setTransfer({ kind: 'upload', fileName: directories[0], completed, total: entries.length });
         await invoke('create_sftp_directory_tree', {
-          ...connectionArgs(),
+          ...sessionArgs(),
           parentPath: currentPath,
           directories
         });
@@ -291,7 +334,7 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
     setError('');
     try {
       const invokeUpload = (overwrite: boolean) => invoke<SftpUploadBatchResult>('upload_sftp_local_paths', {
-        ...connectionArgs(),
+        ...sessionArgs(),
         parentPath: currentPath,
         localPaths: paths,
         overwrite
@@ -419,7 +462,7 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
       const result = await invoke<SftpDownloadResult>(
         file.isDirectory ? 'download_sftp_directory' : 'download_sftp_file',
         {
-          ...connectionArgs(),
+          ...sessionArgs(),
           path: file.path
         }
       );
@@ -460,7 +503,7 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
     setError('');
     try {
       await invoke('delete_sftp_path', {
-        ...connectionArgs(),
+        ...sessionArgs(),
         path: file.path
       });
       setSelectedItem(null);
@@ -525,6 +568,21 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
             }`}
           >
             {transfer?.kind === 'upload' ? (lang === 'zh' ? '上传中' : 'UPLOADING') : t.upload}
+          </button>
+
+          <button
+            onClick={() => setShowHiddenFiles(current => !current)}
+            aria-pressed={showHiddenFiles}
+            className={`p-1 border rounded transition-colors ${
+              showHiddenFiles
+                ? (isLight ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-blue-950/40 border-blue-700 text-blue-300')
+                : (isLight ? 'bg-white border-slate-300 text-slate-500 hover:text-slate-800' : 'bg-[#18181c] border-[#27272a] text-zinc-500 hover:text-zinc-300')
+            }`}
+            title={showHiddenFiles
+              ? (lang === 'zh' ? '隐藏以 . 开头的文件和目录' : 'Hide dotfiles and hidden folders')
+              : (lang === 'zh' ? '显示以 . 开头的文件和目录' : 'Show dotfiles and hidden folders')}
+          >
+            {showHiddenFiles ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
           </button>
 
           <button

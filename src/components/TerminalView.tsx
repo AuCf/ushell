@@ -23,6 +23,9 @@ type TerminalEvent =
   | { type: 'error'; message: string }
   | { type: 'closed'; exitStatus: number | null };
 
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_DELAY_MS = 3000;
+
 const terminalTheme = (isLight: boolean): ITheme => isLight
   ? {
       background: '#ffffff',
@@ -119,6 +122,11 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
     if (!terminalRef.current) return;
     let cancelled = false;
     let openedSessionId: string | null = null;
+    let connecting = false;
+    let reconnectAttempts = 0;
+    let reconnectTimer: number | null = null;
+    let reconnectAfterClose = false;
+    let reconnectReason = '';
     connectedRef.current = false;
     recentOutput.current = '';
     lastErrorOutput.current = '';
@@ -144,9 +152,33 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
 
     const outputDecoder = new TextDecoder();
     const eventChannel = new Channel<TerminalEvent>();
+    const scheduleReconnect = (message: string) => {
+      if (cancelled || reconnectTimer !== null) return;
+      if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        const finalMessage = `SSH reconnect failed after ${MAX_RECONNECT_ATTEMPTS} attempts: ${message}`;
+        lastErrorOutput.current = finalMessage;
+        term.writeln(`\r\n\x1b[31m${finalMessage}\x1b[0m`);
+        connectionCallbackRef.current?.(false, finalMessage);
+        return;
+      }
+
+      reconnectAttempts += 1;
+      const delay = RECONNECT_DELAY_MS * reconnectAttempts;
+      term.writeln(
+        `\r\n\x1b[33m[SSH connection lost. Reconnecting in ${delay / 1000}s (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...]\x1b[0m`
+      );
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        void openTerminal(true);
+      }, delay);
+    };
+
     eventChannel.onmessage = (event) => {
       if (cancelled) return;
       if (event.type === 'connected') {
+        reconnectAttempts = 0;
+        reconnectAfterClose = false;
+        reconnectReason = '';
         connectedRef.current = true;
         connectionCallbackRef.current?.(true);
         term.writeln(`\x1b[32m✔ SSH PTY connected (${event.banner}, ${event.latencyMs}ms)\x1b[0m`);
@@ -162,18 +194,32 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
       }
       if (event.type === 'error') {
         connectedRef.current = false;
+        reconnectAfterClose = true;
+        reconnectReason = event.message;
         lastErrorOutput.current = event.message;
         term.writeln(`\r\n\x1b[31m${event.message}\x1b[0m`);
         connectionCallbackRef.current?.(false, event.message);
         return;
       }
       connectedRef.current = false;
+      sessionIdRef.current = null;
       const status = event.exitStatus == null ? '' : ` (${event.exitStatus})`;
       term.writeln(`\r\n\x1b[33m[SSH session closed${status}]\x1b[0m`);
       connectionCallbackRef.current?.(false);
+      if (reconnectAfterClose) {
+        const message = reconnectReason || 'SSH session closed unexpectedly';
+        reconnectAfterClose = false;
+        reconnectReason = '';
+        scheduleReconnect(message);
+      }
     };
 
-    const openTerminal = async () => {
+    const openTerminal = async (isReconnect = false) => {
+      if (cancelled || connecting) return;
+      connecting = true;
+      if (isReconnect) {
+        term.writeln(`\x1b[36mReconnecting to ${server.username}@${server.host}:${server.port}...\x1b[0m`);
+      }
       try {
         const sessionId = await invoke<string>('open_ssh_terminal', {
           host: server.host,
@@ -186,6 +232,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
           rows: term.rows,
           onEvent: eventChannel
         });
+        connecting = false;
         openedSessionId = sessionId;
         if (cancelled) {
           void invoke('close_ssh_terminal', { sessionId });
@@ -197,11 +244,13 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
           }
         }
       } catch (reason) {
+        connecting = false;
         if (cancelled) return;
         const message = typeof reason === 'string' ? reason : String(reason);
         lastErrorOutput.current = message;
         term.writeln(`\x1b[31m${message}\x1b[0m`);
         connectionCallbackRef.current?.(false, message);
+        scheduleReconnect(message);
       }
     };
     void openTerminal();
@@ -240,6 +289,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
     return () => {
       cancelled = true;
       connectedRef.current = false;
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       resizeObserver.disconnect();
       dataDisposable.dispose();
       resizeDisposable.dispose();
