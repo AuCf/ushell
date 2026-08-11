@@ -72,8 +72,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="w-5 h-5 rounded overflow-hidden border border-emerald-500/40 bg-zinc-900 flex items-center justify-center shrink-0">
             <img src="/ushell_logo.jpg" alt="uShell Logo" className="w-full h-full object-cover" />
           </div>
-          <span className="text-zinc-100 font-extrabold tracking-wider">{t.appTitle}</span>
-          <span className="text-[9px] text-zinc-500 font-normal">v1.0</span>
+          <span className={`font-extrabold tracking-wider ${isLight ? 'text-slate-900' : 'text-zinc-100'}`}>{t.appTitle}</span>
+          <span className={`text-[9px] font-normal ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>v0.0.3</span>
         </div>
 
         <button
