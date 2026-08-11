@@ -16,9 +16,9 @@ jobs:
       matrix:
         include:
           - platform: 'macos-latest'
-            args: '--target aarch64-apple-darwin'
+            target: 'aarch64-apple-darwin'
           - platform: 'windows-latest'
-            args: ''
+            target: 'x86_64-pc-windows-msvc'
 
     runs-on: ${{ matrix.platform }}
 
@@ -35,9 +35,9 @@ jobs:
       - name: Install Rust Stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.target }}
 
-      - name: Install Dependencies
+      - name: Install Frontend Dependencies
         run: npm ci
 
       - name: Build and Publish Release
@@ -54,7 +54,7 @@ jobs:
             
             ### 📦 Binaries Included:
             - **Windows**: `.exe` standalone / installer & `.msi`
-            - **macOS**: `.dmg` / `.app` (Apple Silicon & Intel)
+            - **macOS**: `.dmg` / `.app`
           releaseDraft: false
           prerelease: false
-          args: ${{ matrix.args }}
+          args: --target ${{ matrix.target }}
