@@ -19,9 +19,11 @@ jobs:
       matrix:
         include:
           - platform: 'macos-latest'
-            bundles: 'dmg,app'
+            target: 'aarch64-apple-darwin'
+          - platform: 'macos-latest'
+            target: 'x86_64-apple-darwin'
           - platform: 'windows-latest'
-            bundles: 'msi,nsis'
+            target: 'x86_64-pc-windows-msvc'
 
     runs-on: ${{ matrix.platform }}
 
@@ -33,22 +35,31 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Install Frontend Dependencies
-        run: npm ci
+        run: npm install
 
       - name: Build and Publish Release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: 'v__VERSION__'
-          releaseName: 'uShell v__VERSION__'
-          releaseBody: 'uShell Ultra-Minimalist SSH & SFTP Desktop Client'
+          tagName: ${{ github.ref_name }}
+          releaseName: 'uShell ${{ github.ref_name }}'
+          releaseBody: |
+            ## ⚡ uShell ${{ github.ref_name }} Release
+            
+            Ultra-Minimalist Geek SSH & SFTP Desktop Client.
+            
+            ### 📦 Supported Platforms:
+            - **macOS Apple Silicon (M1/M2/M3/M4)**: `aarch64-apple-darwin` (`.dmg` / `.app`)
+            - **macOS Intel (x86_64)**: `x86_64-apple-darwin` (`.dmg` / `.app`)
+            - **Windows x64**: `x86_64-pc-windows-msvc` (`.exe` / `.msi` / `.nsis`)
           releaseDraft: false
           prerelease: false
-          args: '--bundles ${{ matrix.bundles }}'
+          args: --target ${{ matrix.target }}
