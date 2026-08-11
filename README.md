@@ -3,7 +3,7 @@
 > **Ultra-Minimalist Geek SSH & SFTP Desktop Client**  
 > 专为开发者与运维工程师打造的极简、无边框、支持 AI 辅助的跨平台 FinalShell 替代品。
 
-🌐 **官方网站 (Official Website)**: [website/index.html](website/index.html)
+🌐 **官方网站 (Official Website)**: [docs/index.html](docs/index.html)
 
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2.0-blue.svg?style=flat-square&logo=tauri)](https://tauri.app)
 [![React 18](https://img.shields.io/badge/React-18.2-blue.svg?style=flat-square&logo=react)](https://reactjs.org)
