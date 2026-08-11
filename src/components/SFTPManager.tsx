@@ -3,7 +3,11 @@ import { SFTPItem, ServerProfile } from '../types';
 import { NewFolderModal } from './NewFolderModal';
 import { Language, i18n } from '../i18n';
 import { invoke } from '@tauri-apps/api/core';
-import { Trash2, RefreshCw } from 'lucide-react';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { Download, Loader2, RefreshCw, Trash2 } from 'lucide-react';
+
+const MAX_TRANSFER_BYTES = 64 * 1024 * 1024;
 
 interface SFTPManagerProps {
   server: ServerProfile;
@@ -16,6 +20,74 @@ interface SftpDirectoryResult {
   items: SFTPItem[];
 }
 
+interface SftpDownloadResult {
+  name: string;
+  content: number[];
+}
+
+interface SftpUploadBatchResult {
+  uploaded: number;
+  directories: number;
+}
+
+interface UploadEntry {
+  file: File;
+  relativePath: string;
+}
+
+interface DroppedEntry {
+  isFile: boolean;
+  isDirectory: boolean;
+  name: string;
+  fullPath: string;
+}
+
+interface DroppedFileEntry extends DroppedEntry {
+  file: (success: (file: File) => void, error: (reason: unknown) => void) => void;
+}
+
+interface DroppedDirectoryReader {
+  readEntries: (success: (entries: DroppedEntry[]) => void, error: (reason: unknown) => void) => void;
+}
+
+interface DroppedDirectoryEntry extends DroppedEntry {
+  createReader: () => DroppedDirectoryReader;
+}
+
+const droppedRelativePath = (entry: DroppedEntry) => entry.fullPath.replace(/^\/+/, '') || entry.name;
+
+const readDroppedFile = (entry: DroppedFileEntry) => new Promise<File>((resolve, reject) => {
+  entry.file(resolve, reject);
+});
+
+const readAllDirectoryEntries = async (reader: DroppedDirectoryReader) => {
+  const entries: DroppedEntry[] = [];
+  while (true) {
+    const batch = await new Promise<DroppedEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
+    if (batch.length === 0) return entries;
+    entries.push(...batch);
+  }
+};
+
+const collectDroppedEntry = async (
+  entry: DroppedEntry,
+  files: UploadEntry[],
+  directories: string[]
+): Promise<void> => {
+  if (entry.isFile) {
+    files.push({
+      file: await readDroppedFile(entry as DroppedFileEntry),
+      relativePath: droppedRelativePath(entry)
+    });
+    return;
+  }
+  if (!entry.isDirectory) return;
+
+  directories.push(droppedRelativePath(entry));
+  const children = await readAllDirectoryEntries((entry as DroppedDirectoryEntry).createReader());
+  for (const child of children) await collectDroppedEntry(child, files, directories);
+};
+
 export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark', lang = 'zh' }) => {
   const [currentPath, setCurrentPath] = useState('.');
   const [files, setFiles] = useState<SFTPItem[]>([]);
@@ -23,7 +95,18 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [isNewFolderModalOpen, setIsNewFolderModalOpen] = useState(false);
+  const [transfer, setTransfer] = useState<{
+    kind: 'upload' | 'download';
+    fileName: string;
+    completed?: number;
+    total?: number;
+  } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const requestSequence = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragDepth = useRef(0);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const nativeUploadRef = useRef<(paths: string[]) => Promise<void>>(async () => undefined);
 
   const isLight = theme === 'light';
   const t = i18n[lang];
@@ -105,10 +188,239 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
     }
   };
 
+  const uploadFile = async (relativePath: string, content: number[], overwrite: boolean) => {
+    await invoke('upload_sftp_file', {
+      ...connectionArgs(),
+      parentPath: currentPath,
+      relativePath,
+      content,
+      overwrite
+    });
+  };
+
+  const uploadEntries = async (entries: UploadEntry[], directories: string[]) => {
+    if (transfer || (entries.length === 0 && directories.length === 0)) return;
+    const oversized = entries.find(({ file }) => file.size > MAX_TRANSFER_BYTES);
+    if (oversized) {
+      setError(lang === 'zh' ? '单个上传文件不能超过 64 MB' : 'A single upload cannot exceed 64 MB');
+      return;
+    }
+
+    setError('');
+    let completed = 0;
+    try {
+      if (directories.length > 0) {
+        setTransfer({ kind: 'upload', fileName: directories[0], completed, total: entries.length });
+        await invoke('create_sftp_directory_tree', {
+          ...connectionArgs(),
+          parentPath: currentPath,
+          directories
+        });
+      }
+
+      for (const { file, relativePath } of entries) {
+        setTransfer({ kind: 'upload', fileName: relativePath, completed, total: entries.length });
+        const content = Array.from(new Uint8Array(await file.arrayBuffer()));
+        try {
+          await uploadFile(relativePath, content, false);
+        } catch (err: any) {
+          const message = typeof err === 'string' ? err : (err?.message || String(err));
+          if (!message.startsWith('SFTP_FILE_EXISTS:')) throw err;
+
+          const shouldOverwrite = window.confirm(
+            lang === 'zh'
+              ? `远程目录中已存在 ${relativePath}，是否覆盖？`
+              : `${relativePath} already exists remotely. Overwrite it?`
+          );
+          if (!shouldOverwrite) continue;
+          await uploadFile(relativePath, content, true);
+        }
+        completed += 1;
+      }
+      await loadDirectory(currentPath);
+    } catch (err: any) {
+      const message = typeof err === 'string' ? err : (err?.message || String(err));
+      setError(completed > 0 && lang === 'zh' ? `已上传 ${completed} 个文件，随后失败：${message}` : message);
+    } finally {
+      setTransfer(null);
+    }
+  };
+
+  const uploadLocalPaths = async (paths: string[]) => {
+    if (transfer || paths.length === 0) return;
+    const label = paths.length === 1
+      ? paths[0].split(/[\\/]/).pop() || paths[0]
+      : (lang === 'zh' ? `${paths.length} 个项目` : `${paths.length} items`);
+    setTransfer({ kind: 'upload', fileName: label });
+    setError('');
+    try {
+      const invokeUpload = (overwrite: boolean) => invoke<SftpUploadBatchResult>('upload_sftp_local_paths', {
+        ...connectionArgs(),
+        parentPath: currentPath,
+        localPaths: paths,
+        overwrite
+      });
+      try {
+        await invokeUpload(false);
+      } catch (err: any) {
+        const message = typeof err === 'string' ? err : (err?.message || String(err));
+        if (!message.startsWith('SFTP_FILES_EXIST:')) throw err;
+        const conflictNames = message.slice('SFTP_FILES_EXIST:'.length);
+        const shouldOverwrite = window.confirm(
+          lang === 'zh'
+            ? `下列远程文件已经存在：\n${conflictNames}\n\n是否全部覆盖？`
+            : `These remote files already exist:\n${conflictNames}\n\nOverwrite all of them?`
+        );
+        if (!shouldOverwrite) return;
+        await invokeUpload(true);
+      }
+      await loadDirectory(currentPath);
+    } catch (err: any) {
+      setError(typeof err === 'string' ? err : (err?.message || String(err)));
+    } finally {
+      setTransfer(null);
+    }
+  };
+
+  nativeUploadRef.current = uploadLocalPaths;
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    const registerNativeDrop = async () => {
+      const scaleFactor = await getCurrentWindow().scaleFactor();
+      const removeListener = await getCurrentWebview().onDragDropEvent(({ payload }) => {
+        if (payload.type === 'leave') {
+          setIsDragging(false);
+          return;
+        }
+
+        const rect = rootRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        const x = payload.position.x / scaleFactor;
+        const y = payload.position.y / scaleFactor;
+        const isInside = x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+
+        if (payload.type === 'drop') {
+          setIsDragging(false);
+          if (isInside) void nativeUploadRef.current(payload.paths);
+          return;
+        }
+        setIsDragging(isInside);
+      });
+
+      if (cancelled) removeListener();
+      else unlisten = removeListener;
+    };
+
+    void registerNativeDrop().catch((reason) => {
+      if (!cancelled) setError(typeof reason === 'string' ? reason : String(reason));
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const handleUploadSelection = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (file) await uploadEntries([{ file, relativePath: file.name }], []);
+  };
+
+  const handleDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    dragDepth.current += 1;
+    if (Array.from(event.dataTransfer.types).includes('Files')) setIsDragging(true);
+  };
+
+  const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setIsDragging(false);
+  };
+
+  const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    dragDepth.current = 0;
+    setIsDragging(false);
+    if (transfer) return;
+
+    const entries: UploadEntry[] = [];
+    const directories: string[] = [];
+    const droppedEntries: DroppedEntry[] = [];
+    try {
+      for (const item of Array.from(event.dataTransfer.items)) {
+        if (item.kind !== 'file') continue;
+        const droppedEntry = (item as DataTransferItem & {
+          webkitGetAsEntry?: () => DroppedEntry | null;
+        }).webkitGetAsEntry?.();
+        if (droppedEntry) {
+          droppedEntries.push(droppedEntry);
+        } else {
+          const file = item.getAsFile();
+          if (file) entries.push({ file, relativePath: file.name });
+        }
+      }
+      for (const droppedEntry of droppedEntries) {
+        await collectDroppedEntry(droppedEntry, entries, directories);
+      }
+      await uploadEntries(entries, directories);
+    } catch (err: any) {
+      setError(typeof err === 'string' ? err : (err?.message || String(err)));
+    }
+  };
+
+  const handleDownload = async (file: SFTPItem, event: React.MouseEvent) => {
+    event.stopPropagation();
+    if (file.isDirectory || transfer) return;
+
+    setTransfer({ kind: 'download', fileName: file.name });
+    setError('');
+    try {
+      const result = await invoke<SftpDownloadResult>('download_sftp_file', {
+        ...connectionArgs(),
+        path: file.path
+      });
+      const blobUrl = URL.createObjectURL(new Blob([new Uint8Array(result.content)], {
+        type: 'application/octet-stream'
+      }));
+      const anchor = document.createElement('a');
+      anchor.href = blobUrl;
+      anchor.download = result.name;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+    } catch (err: any) {
+      setError(typeof err === 'string' ? err : (err?.message || String(err)));
+    } finally {
+      setTransfer(null);
+    }
+  };
+
   return (
-    <div className={`h-full border-l flex flex-col font-mono text-[11px] select-none ${
+    <div
+      ref={rootRef}
+      onDragEnter={handleDragEnter}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+      }}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className={`relative h-full border-l flex flex-col font-mono text-[11px] select-none ${
       isLight ? 'bg-white border-slate-200 text-slate-700' : 'bg-[#0a0a0c] border-[#1a1a1e] text-zinc-300'
-    }`}>
+    }`}
+    >
+      {isDragging && (
+        <div className={`absolute inset-2 z-30 pointer-events-none border-2 border-dashed rounded flex items-center justify-center text-sm font-bold ${
+          isLight
+            ? 'bg-blue-50/95 border-blue-500 text-blue-700'
+            : 'bg-[#101827]/95 border-blue-400 text-blue-300'
+        }`}>
+          {lang === 'zh' ? '松开即可上传文件或整个目录' : 'Drop to upload files or folders'}
+        </div>
+      )}
       {/* Path Toolbar */}
       <div className={`p-1.5 border-b flex items-center justify-between gap-2 ${
         isLight ? 'bg-[#f1f5f9] border-slate-200' : 'bg-[#0e0e11] border-[#1a1a1e]'
@@ -131,13 +443,14 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
           </button>
 
           <button
-            disabled
-            title={lang === 'zh' ? '真实文件上传尚未接入' : 'Real file upload is not available yet'}
-            className={`px-1.5 py-0.5 border rounded text-[10px] cursor-not-allowed opacity-50 ${
+            onClick={() => fileInputRef.current?.click()}
+            disabled={Boolean(transfer)}
+            title={lang === 'zh' ? '上传文件到当前远程目录（最大 64 MB）' : 'Upload to this remote directory (64 MB max)'}
+            className={`px-1.5 py-0.5 border rounded text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
               isLight ? 'bg-slate-900 border-slate-900 text-white hover:bg-slate-800' : 'bg-[#18181c] border-[#27272a] text-zinc-300 hover:text-white'
             }`}
           >
-            {t.upload}
+            {transfer?.kind === 'upload' ? (lang === 'zh' ? '上传中' : 'UPLOADING') : t.upload}
           </button>
 
           <button
@@ -158,6 +471,21 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
           isLight ? 'bg-red-50 border-red-200 text-red-700' : 'bg-red-950/30 border-red-900 text-red-400'
         }`}>
           {error}
+        </div>
+      )}
+
+      {transfer && (
+        <div className={`px-2.5 py-1.5 border-b flex items-center gap-1.5 text-[10px] ${
+          isLight ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-blue-950/30 border-blue-900 text-blue-300'
+        }`}>
+          <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+          <span className="truncate">
+            {transfer.kind === 'upload'
+              ? (lang === 'zh'
+                ? `正在上传 ${transfer.fileName}${transfer.total ? `（${transfer.completed}/${transfer.total}）` : ''}`
+                : `Uploading ${transfer.fileName}${transfer.total ? ` (${transfer.completed}/${transfer.total})` : ''}`)
+              : (lang === 'zh' ? `正在下载 ${transfer.fileName}` : `Downloading ${transfer.fileName}`)}
+          </span>
         </div>
       )}
 
@@ -206,14 +534,28 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
 
                   <td className="py-1 px-1.5 text-right">
                     {file.name !== '..' && (
-                      <button
-                        disabled
-                        onClick={(e) => e.stopPropagation()}
-                        title={lang === 'zh' ? '远程删除尚未启用' : 'Remote delete is not enabled'}
-                        className="opacity-0 group-hover:opacity-30 p-0.5 cursor-not-allowed"
-                      >
-                        <Trash2 className="w-3 h-3 text-zinc-400" />
-                      </button>
+                      <div className="flex items-center justify-end gap-0.5">
+                        {!file.isDirectory && (
+                          <button
+                            onClick={(event) => handleDownload(file, event)}
+                            disabled={Boolean(transfer)}
+                            title={lang === 'zh' ? `下载 ${file.name}` : `Download ${file.name}`}
+                            className={`opacity-0 group-hover:opacity-100 p-0.5 rounded disabled:opacity-30 ${
+                              isLight ? 'hover:bg-slate-300 text-slate-500' : 'hover:bg-[#27272a] text-zinc-500 hover:text-zinc-200'
+                            }`}
+                          >
+                            <Download className="w-3 h-3" />
+                          </button>
+                        )}
+                        <button
+                          disabled
+                          onClick={(e) => e.stopPropagation()}
+                          title={lang === 'zh' ? '远程删除尚未启用' : 'Remote delete is not enabled'}
+                          className="opacity-0 group-hover:opacity-30 p-0.5 cursor-not-allowed"
+                        >
+                          <Trash2 className="w-3 h-3 text-zinc-400" />
+                        </button>
+                      </div>
                     )}
                   </td>
                 </tr>
@@ -222,6 +564,13 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
           </tbody>
         </table>
       </div>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        className="hidden"
+        onChange={handleUploadSelection}
+      />
 
       <NewFolderModal
         isOpen={isNewFolderModalOpen}
