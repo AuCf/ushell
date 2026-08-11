@@ -17,14 +17,14 @@ export function parseFinalShellConfig(rawContent: string): ServerProfile[] {
       if (item.host || item.ip) {
         importedProfiles.push({
           id: `fs_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-          name: item.name || item.remark || item.host || 'FinalShell 导入服务器',
+          name: item.name || item.remark || item.host || '外部导入服务器',
           host: item.host || item.ip || '127.0.0.1',
           port: Number(item.port) || 22,
           username: item.user || item.username || 'root',
           authType: item.password ? 'password' : 'privateKey',
           password: item.password || '',
-          group: item.group || 'FinalShell 导入',
-          tags: ['FinalShell', '导入'],
+          group: item.group || '外部导入',
+          tags: ['外部配置', '导入'],
           createdAt: Date.now()
         });
       }

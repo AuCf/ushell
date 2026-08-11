@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { ServerProfile, SessionTab } from './types';
-import { INITIAL_SERVERS } from './services/mockData';
 import { Language, i18n } from './i18n';
 import { Sidebar } from './components/Sidebar';
 import { TabBar } from './components/TabBar';
@@ -9,9 +8,8 @@ import { SFTPManager } from './components/SFTPManager';
 import { ServerMonitor } from './components/ServerMonitor';
 import { AICopilot } from './components/AICopilot';
 import { ServerModal } from './components/ServerModal';
-import { FinalShellImportModal } from './components/FinalShellImportModal';
+import { ImportConfigModal } from './components/ImportConfigModal';
 import { Toast, ToastMessage } from './components/Toast';
-import { Terminal } from 'lucide-react';
 
 export function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
@@ -42,7 +40,6 @@ export function App() {
   });
 
   const [tabs, setTabs] = useState<SessionTab[]>([]);
-
   const [activeTabId, setActiveTabId] = useState<string>('');
   const [isAICopilotOpen, setIsAICopilotOpen] = useState(false);
   const [isServerModalOpen, setIsServerModalOpen] = useState(false);
@@ -54,7 +51,6 @@ export function App() {
 
   const activeTab = tabs.find(t => t.id === activeTabId);
   const activeServer = servers.find(s => s.id === activeTab?.serverId);
-
   const t = i18n[lang];
 
   useEffect(() => {
@@ -62,30 +58,27 @@ export function App() {
   }, [servers]);
 
   useEffect(() => {
+    localStorage.setItem('ushell_theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem('ushell_lang', lang);
+  }, [lang]);
+
+  useEffect(() => {
     localStorage.setItem('ushell_groups', JSON.stringify(persistedGroups));
   }, [persistedGroups]);
 
-  const allAvailableGroups = Array.from(
-    new Set([
-      ...persistedGroups,
-      ...servers.map(s => s.group).filter((g): g is string => !!g)
-    ])
-  );
-
   const toggleTheme = () => {
-    const nextTheme = theme === 'dark' ? 'light' : 'dark';
-    setTheme(nextTheme);
-    localStorage.setItem('ushell_theme', nextTheme);
+    setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
   };
 
   const toggleLang = () => {
-    const nextLang = lang === 'zh' ? 'en' : 'zh';
-    setLang(nextLang);
-    localStorage.setItem('ushell_lang', nextLang);
+    setLang(prev => (prev === 'zh' ? 'en' : 'zh'));
   };
 
-  const showToast = (text: string, type: ToastMessage['type'] = 'info') => {
-    setToastMessage({ id: `t_${Date.now()}`, type, text });
+  const showToast = (title: string, message: string, type: ToastMessage['type'] = 'info') => {
+    setToastMessage({ id: Date.now().toString(), text: `${title}: ${message}`, type });
   };
 
   const handleConnectServer = (server: ServerProfile) => {
@@ -100,36 +93,34 @@ export function App() {
       serverId: server.id,
       title: server.name,
       host: server.host,
-      connected: false,
-      activeView: 'both',
+      connected: true,
+      activeView: 'terminal',
       createdAt: Date.now()
     };
 
     setTabs(prev => [...prev, newTab]);
     setActiveTabId(newTab.id);
-    showToast(`${lang === 'zh' ? '正在连接: ' : 'Connecting to '}${server.name}`, 'info');
+    showToast(
+      lang === 'zh' ? '会话建立' : 'Session Connected',
+      `${lang === 'zh' ? '已连接至' : 'Connected to'} ${server.username}@${server.host}:${server.port}`,
+      'success'
+    );
   };
 
-  const handleConnectionStateChange = (serverId: string, connected: boolean, error?: string) => {
-    setTabs(prev => prev.map(tab => tab.serverId === serverId ? { ...tab, connected } : tab));
-    const server = servers.find(item => item.id === serverId);
-    if (connected) {
-      showToast(`${lang === 'zh' ? 'SSH 认证成功: ' : 'SSH authenticated: '}${server?.name || serverId}`, 'success');
-    } else if (error) {
-      showToast(error, 'error');
-    }
-  };
-
-  const handleCloseTab = (id: string) => {
-    const nextTabs = tabs.filter(t => t.id !== id);
-    setTabs(nextTabs);
-    if (activeTabId === id) {
-      setActiveTabId(nextTabs[nextTabs.length - 1]?.id || '');
-    }
+  const handleCloseTab = (tabId: string) => {
+    setTabs(prev => {
+      const filtered = prev.filter(t => t.id !== tabId);
+      if (activeTabId === tabId && filtered.length > 0) {
+        setActiveTabId(filtered[filtered.length - 1].id);
+      } else if (filtered.length === 0) {
+        setActiveTabId('');
+      }
+      return filtered;
+    });
   };
 
   const handleToggleViewMode = (tabId: string, mode: 'terminal' | 'sftp' | 'both') => {
-    setTabs(prev => prev.map(t => t.id === tabId ? { ...t, activeView: mode } : t));
+    setTabs(prev => prev.map(t => (t.id === tabId ? { ...t, activeView: mode } : t)));
   };
 
   const handleOpenAddServer = () => {
@@ -142,78 +133,95 @@ export function App() {
     setIsServerModalOpen(true);
   };
 
-  const handleSaveServer = (profileData: Omit<ServerProfile, 'id' | 'createdAt'> & { id?: string }) => {
-    if (profileData.group && !persistedGroups.includes(profileData.group)) {
-      setPersistedGroups(prev => [...prev, profileData.group!]);
+  const handleSaveServer = (serverData: Omit<ServerProfile, 'id' | 'createdAt'> & { id?: string }) => {
+    if (serverData.group && !persistedGroups.includes(serverData.group)) {
+      setPersistedGroups(prev => [...prev, serverData.group!]);
     }
 
-    if (profileData.id) {
-      setServers(prev => prev.map(s => s.id === profileData.id ? {
-        ...s,
-        ...profileData
-      } as ServerProfile : s));
-
-      setTabs(prev => prev.map(t => t.serverId === profileData.id ? {
-        ...t,
-        title: profileData.name,
-        host: profileData.host
-      } : t));
-
-      showToast(lang === 'zh' ? `已更新配置: ${profileData.name}` : `Updated ${profileData.name}`, 'success');
+    if (serverData.id) {
+      setServers(prev => prev.map(s => (s.id === serverData.id ? { ...s, ...serverData } as ServerProfile : s)));
+      setTabs(prev => prev.map(t => (t.serverId === serverData.id ? { ...t, title: serverData.name } : t)));
+      showToast(lang === 'zh' ? '更新成功' : 'Updated', `${serverData.name} ${lang === 'zh' ? '参数已修改' : 'configuration updated'}`, 'success');
     } else {
       const newServer: ServerProfile = {
-        ...profileData,
+        ...serverData,
         id: `srv_${Date.now()}`,
         createdAt: Date.now()
-      } as ServerProfile;
-
-      setServers(prev => [newServer, ...prev]);
+      };
+      setServers(prev => [...prev, newServer]);
+      showToast(lang === 'zh' ? '保存成功' : 'Saved', `${newServer.name} ${lang === 'zh' ? '节点已添加' : 'host added'}`, 'success');
       handleConnectServer(newServer);
-      showToast(lang === 'zh' ? `已新建主机: ${newServer.name}` : `Created ${newServer.name}`, 'success');
     }
-  };
-
-  const handleImportSuccess = (imported: ServerProfile[]) => {
-    const importedGroups = imported.map(s => s.group).filter((g): g is string => !!g);
-    setPersistedGroups(prev => Array.from(new Set([...prev, ...importedGroups])));
-    setServers(prev => [...imported, ...prev]);
-    if (imported.length > 0) {
-      handleConnectServer(imported[0]);
-    }
-    showToast(lang === 'zh' ? `成功导入 ${imported.length} 台服务器` : `Imported ${imported.length} servers`, 'success');
   };
 
   const handleDeleteServer = (id: string) => {
     const target = servers.find(s => s.id === id);
-    const remainingTabs = tabs.filter(tab => tab.serverId !== id);
+    if (!target) return;
     setServers(prev => prev.filter(s => s.id !== id));
-    setTabs(remainingTabs);
-    if (activeTab?.serverId === id) {
-      setActiveTabId(remainingTabs[remainingTabs.length - 1]?.id || '');
-    }
-    if (target) showToast(lang === 'zh' ? `已删除 ${target.name}` : `Deleted ${target.name}`, 'info');
+    setTabs(prev => {
+      const remaining = prev.filter(t => t.serverId !== id);
+      if (activeTab && activeTab.serverId === id) {
+        setActiveTabId(remaining.length > 0 ? remaining[remaining.length - 1].id : '');
+      }
+      return remaining;
+    });
+    showToast(lang === 'zh' ? '已被移除' : 'Removed', `${target.name} ${lang === 'zh' ? '节点已从列表删除' : 'deleted'}`, 'warning');
   };
 
-  const handleAskAIWithContext = (errContent?: string) => {
-    setErrorCtxForAI(errContent);
+  const handleImportSuccess = (imported: ServerProfile[]) => {
+    if (imported.length === 0) return;
+    const newGroups = imported.map(s => s.group).filter(Boolean) as string[];
+    setPersistedGroups(prev => Array.from(newSet([...prev, ...newGroups])));
+
+    setServers(prev => {
+      const existingHosts = new Set(prev.map(s => `${s.host}:${s.port}`));
+      const nonDuplicates = imported.filter(s => !existingHosts.has(`${s.host}:${s.port}`));
+      return [...prev, ...nonDuplicates];
+    });
+
+    showToast(
+      lang === 'zh' ? '导入成功' : 'Import Complete',
+      `${lang === 'zh' ? '新增' : 'Added'} ${imported.length} ${lang === 'zh' ? '台主机节点' : 'hosts'}`,
+      'success'
+    );
+  };
+
+  const newSet = <T,>(arr: T[]): T[] => Array.from(new Set(arr));
+
+  const handleAskAIWithContext = (errorContext?: string) => {
+    setErrorCtxForAI(errorContext);
     setIsAICopilotOpen(true);
   };
 
   const handleInsertCommandToTerminal = (command: string) => {
-    if (activeTabId && activeTab?.activeView === 'sftp') {
-      handleToggleViewMode(activeTabId, 'both');
+    if (!activeTabId) {
+      showToast(lang === 'zh' ? '无法写入' : 'No Active Session', lang === 'zh' ? '请先打开一个终端会话标签页' : 'Open a terminal tab first', 'error');
+      return;
     }
     setPendingTerminalCommand(command);
-    showToast(lang === 'zh' ? '命令已填入终端输入框' : 'Command inserted into terminal', 'info');
+    setIsAICopilotOpen(false);
+    showToast(lang === 'zh' ? '已注入' : 'Command Injected', command, 'info');
   };
+
+  const handleConnectionStateChange = (serverId: string, connected: boolean, error?: string) => {
+    setTabs(prev => prev.map(t => (t.serverId === serverId ? { ...t, connected } : t)));
+    if (error) {
+      showToast(lang === 'zh' ? '连接失败' : 'Connection Error', error, 'error');
+    }
+  };
+
+  const allAvailableGroups = Array.from(new Set([
+    ...persistedGroups,
+    ...servers.map(s => s.group).filter(Boolean) as string[]
+  ]));
 
   const isLight = theme === 'light';
 
   return (
-    <div className={`h-screen w-screen flex overflow-hidden font-mono select-none ${
-      isLight ? 'bg-[#f8fafc] text-[#0f172a]' : 'bg-[#09090b] text-[#e4e4e7]'
+    <div className={`flex h-screen w-screen overflow-hidden font-sans select-none ${
+      isLight ? 'bg-[#f8fafc] text-slate-800' : 'bg-[#09090b] text-zinc-100'
     }`}>
-      {/* Sidebar */}
+      {/* Sidebar navigation */}
       <Sidebar
         servers={servers}
         activeServerId={activeServer?.id}
@@ -242,20 +250,23 @@ export function App() {
           onNewSession={handleOpenAddServer}
         />
 
-        {activeTab && activeServer ? (
-          <>
-            {tabs.map(tab => {
-              const tabServer = servers.find(server => server.id === tab.serverId);
+        {tabs.length > 0 ? (
+          <div className="flex-1 flex flex-col min-h-0 relative overflow-hidden">
+            {tabs.map((tab) => {
+              const tabServer = servers.find(s => s.id === tab.serverId);
               if (!tabServer) return null;
               const isActive = tab.id === activeTabId;
               const terminalVisible = isActive && (tab.activeView === 'terminal' || tab.activeView === 'both');
+
               return (
                 <div
                   key={tab.id}
-                  className={`${isActive ? 'flex' : 'hidden'} flex-1 flex-col min-h-0 relative overflow-hidden`}
+                  className={`flex-1 flex-col min-h-0 w-full overflow-hidden ${
+                    isActive ? 'flex' : 'hidden'
+                  }`}
                 >
                   <div className="flex-1 flex min-h-0 w-full overflow-hidden">
-                    <div className={`${terminalVisible ? 'flex' : 'hidden'} ${tab.activeView === 'both' ? 'w-3/5' : 'w-full'} h-full flex-col min-w-0`}>
+                    <div className={`${isActive && tab.activeView === 'both' ? 'w-3/5' : 'w-full'} h-full flex flex-col min-w-0 ${terminalVisible ? '' : 'hidden'}`}>
                       <TerminalView
                         server={tabServer}
                         theme={theme}
@@ -279,7 +290,7 @@ export function App() {
                 </div>
               );
             })}
-          </>
+          </div>
         ) : (
           <div className={`flex-1 flex flex-col items-center justify-center p-8 text-center font-mono ${
             isLight ? 'bg-[#f8fafc] text-slate-500' : 'bg-[#09090b] text-zinc-500'
@@ -308,7 +319,7 @@ export function App() {
                   isLight ? 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50' : 'bg-[#18181c] hover:bg-[#222228] border-[#27272a] text-zinc-400'
                 }`}
               >
-                {t.import} FINALSHELL
+                {t.import}
               </button>
             </div>
           </div>
@@ -334,7 +345,7 @@ export function App() {
         onSave={handleSaveServer}
       />
 
-      <FinalShellImportModal
+      <ImportConfigModal
         isOpen={isImportModalOpen}
         theme={theme}
         lang={lang}

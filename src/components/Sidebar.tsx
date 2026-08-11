@@ -65,20 +65,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
       isLight ? 'bg-[#f8fafc] border-[#e2e8f0] text-slate-700' : 'bg-[#0c0c0e] border-[#1a1a1e] text-zinc-300'
     }`}>
       {/* Title with Stylized U Logo */}
-      <div className={`h-9 px-3 border-b flex items-center justify-between font-mono ${
+      <div className={`h-9 px-2.5 border-b flex items-center justify-between font-mono gap-1 shrink-0 ${
         isLight ? 'bg-[#f1f5f9] border-[#e2e8f0] text-slate-800' : 'bg-[#0e0e11] border-[#1a1a1e] text-zinc-400'
       }`}>
-        <div className="flex items-center gap-2 font-bold tracking-tight">
+        <div className="flex items-center gap-1.5 font-bold tracking-tight min-w-0 flex-1 overflow-hidden">
           <div className="w-5 h-5 rounded overflow-hidden border border-emerald-500/40 bg-zinc-900 flex items-center justify-center shrink-0">
             <img src="/ushell_logo.jpg" alt="uShell Logo" className="w-full h-full object-cover" />
           </div>
-          <span className={`font-extrabold tracking-wider ${isLight ? 'text-slate-900' : 'text-zinc-100'}`}>{t.appTitle}</span>
-          <span className={`text-[9px] font-normal ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>v0.0.3</span>
+          <span className={`font-extrabold tracking-wider truncate text-[12px] shrink-0 ${isLight ? 'text-slate-900' : 'text-zinc-100'}`}>uShell</span>
+          <span className={`text-[9px] font-normal shrink-0 ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>v0.0.3</span>
         </div>
 
         <button
           onClick={onOpenAICopilot}
-          className={`px-1.5 py-0.5 border text-[10px] font-mono rounded ${
+          className={`px-1.5 py-0.5 border text-[10px] font-mono rounded shrink-0 whitespace-nowrap ${
             isLight ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50' : 'bg-[#16161a] border-[#24242a] text-zinc-400 hover:text-zinc-200'
           }`}
           title="AI Command Palette"

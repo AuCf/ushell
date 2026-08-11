@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
-import { parseFinalShellConfig } from '../services/finalshellImporter';
+import { parseFinalShellConfig } from '../services/configImporter';
 import { ServerProfile } from '../types';
 import { Language, i18n } from '../i18n';
 import { X, Download, CheckCircle2 } from 'lucide-react';
 
-interface FinalShellImportModalProps {
+interface ImportConfigModalProps {
   isOpen: boolean;
   theme?: 'dark' | 'light';
   lang?: Language;
@@ -12,7 +12,7 @@ interface FinalShellImportModalProps {
   onImportSuccess: (profiles: ServerProfile[]) => void;
 }
 
-export const FinalShellImportModal: React.FC<FinalShellImportModalProps> = ({
+export const ImportConfigModal: React.FC<ImportConfigModalProps> = ({
   isOpen,
   theme = 'dark',
   lang = 'zh',
@@ -65,7 +65,7 @@ export const FinalShellImportModal: React.FC<FinalShellImportModalProps> = ({
 
           <textarea
             rows={7}
-            placeholder={lang === 'zh' ? `支持导入格式:\n1. FinalShell 导出的 conn.json 文件内容\n2. 纯文本列表:\nroot@192.168.1.101:22\ndeploy@47.98.120.88:22022` : `Supported formats:\n1. FinalShell conn.json JSON string\n2. Plain text lines:\nroot@192.168.1.101:22\ndeploy@47.98.120.88:22022`}
+            placeholder={lang === 'zh' ? `支持导入格式:\n1. 外部软件导出的通用 JSON 配置文件内容 (如 conn.json)\n2. 纯文本 SSH 连接节点列表:\nroot@192.168.1.101:22\ndeploy@47.98.120.88:22022` : `Supported formats:\n1. Exported generic JSON config string (e.g. conn.json)\n2. Plain text lines:\nroot@192.168.1.101:22\ndeploy@47.98.120.88:22022`}
             value={rawText}
             onChange={(e) => setRawText(e.target.value)}
             className={`w-full border rounded-lg p-3 font-mono text-[11px] focus:outline-none ${

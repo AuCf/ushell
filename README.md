@@ -1,7 +1,7 @@
 # ⚡ uShell
 
 > **Ultra-Minimalist Geek SSH & SFTP Desktop Client**  
-> 专为开发者与运维工程师打造的极简、无边框、支持 AI 辅助的跨平台 FinalShell 替代品。
+> 专为开发者与运维工程师打造的极简、无边框、支持 AI 辅助的跨平台现代桌面客户端。
 
 🌐 **官方网站 (Official Website)**: [docs/index.html](docs/index.html)
 
@@ -14,7 +14,7 @@
 
 ## 🌟 为什么选择 uShell？
 
-大多数传统 SSH 客户端（如 FinalShell、Xshell）界面繁复或风格过时。**uShell** 采用类似 **Ghostty / Neovim** 的超极简暗黑极客风格设计，剥离了一切臃肿装饰，结合 **Tauri v2 (Rust)** 带来轻量高效的桌面终端体验。
+大多数传统 SSH 客户端界面繁复或风格过时。**uShell** 采用类似 **Ghostty / Neovim** 的超极简暗黑极客风格设计，剥离了一切臃肿装饰，结合 **Tauri v2 (Rust)** 带来轻量高效的桌面终端体验。
 
 ![uShell Terminal Preview](docs/preview01.png)
 
@@ -32,8 +32,8 @@
   - 目录树穿梭、`+MKDIR` 新建文件夹、文件传输与实时进度条。
 - 🤖 **AI 命令行助手与智能排错 (AI Copilot & Error Diagnoser)**
   - 快捷键 `AI:Cmd` 面板，已接入 **DeepSeek / OpenAI / Claude / 本地 Ollama** 大模型 API；支持终端报错一键分析与指令“一键填入终端 (RUN IN TERM)”。
-- 🔄 **FinalShell 配置一键导入 (FinalShell Importer)**
-  - 无缝解析 FinalShell `conn.json` 文件或纯文本 IP 节点列表 (`root@192.168.1.1:22`)。
+- 🔄 **第三方终端配置一键导入 (External Config Importer)**
+  - 无缝解析通用 JSON 配置文件或纯文本 IP 节点列表 (`root@192.168.1.1:22`)。
 - 🎨 **黑白极客双主题 (Dark / Light Theme)**
   - ☀️ 日间清爽模式与 🌙 暗黑极客模式一键切换，全局组件自适应。
 - 🌐 **中英文双语支持 (Full i18n)**
