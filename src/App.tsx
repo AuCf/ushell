@@ -123,8 +123,8 @@ export function App() {
   const handleCloseTab = (id: string) => {
     const nextTabs = tabs.filter(t => t.id !== id);
     setTabs(nextTabs);
-    if (activeTabId === id && nextTabs.length > 0) {
-      setActiveTabId(nextTabs[nextTabs.length - 1].id);
+    if (activeTabId === id) {
+      setActiveTabId(nextTabs[nextTabs.length - 1]?.id || '');
     }
   };
 
@@ -185,8 +185,12 @@ export function App() {
 
   const handleDeleteServer = (id: string) => {
     const target = servers.find(s => s.id === id);
+    const remainingTabs = tabs.filter(tab => tab.serverId !== id);
     setServers(prev => prev.filter(s => s.id !== id));
-    setTabs(prev => prev.filter(t => t.serverId !== id));
+    setTabs(remainingTabs);
+    if (activeTab?.serverId === id) {
+      setActiveTabId(remainingTabs[remainingTabs.length - 1]?.id || '');
+    }
     if (target) showToast(lang === 'zh' ? `已删除 ${target.name}` : `Deleted ${target.name}`, 'info');
   };
 
@@ -239,31 +243,43 @@ export function App() {
         />
 
         {activeTab && activeServer ? (
-          <div className="flex-1 flex flex-col min-h-0 relative overflow-hidden">
-            <div className="flex-1 flex min-h-0 w-full overflow-hidden">
-              {(activeTab.activeView === 'terminal' || activeTab.activeView === 'both') && (
-                <div className={`${activeTab.activeView === 'both' ? 'w-3/5' : 'w-full'} h-full flex flex-col min-w-0`}>
-                  <TerminalView
-                    server={activeServer}
-                    theme={theme}
-                    lang={lang}
-                    onAskAIWithContext={handleAskAIWithContext}
-                    pendingCommand={pendingTerminalCommand}
-                    onCommandHandled={() => setPendingTerminalCommand(null)}
-                    onConnectionStateChange={(connected, error) => handleConnectionStateChange(activeServer.id, connected, error)}
-                  />
-                </div>
-              )}
+          <>
+            {tabs.map(tab => {
+              const tabServer = servers.find(server => server.id === tab.serverId);
+              if (!tabServer) return null;
+              const isActive = tab.id === activeTabId;
+              const terminalVisible = isActive && (tab.activeView === 'terminal' || tab.activeView === 'both');
+              return (
+                <div
+                  key={tab.id}
+                  className={`${isActive ? 'flex' : 'hidden'} flex-1 flex-col min-h-0 relative overflow-hidden`}
+                >
+                  <div className="flex-1 flex min-h-0 w-full overflow-hidden">
+                    <div className={`${terminalVisible ? 'flex' : 'hidden'} ${tab.activeView === 'both' ? 'w-3/5' : 'w-full'} h-full flex-col min-w-0`}>
+                      <TerminalView
+                        server={tabServer}
+                        theme={theme}
+                        lang={lang}
+                        visible={terminalVisible}
+                        onAskAIWithContext={handleAskAIWithContext}
+                        pendingCommand={isActive ? pendingTerminalCommand : null}
+                        onCommandHandled={() => setPendingTerminalCommand(null)}
+                        onConnectionStateChange={(connected, error) => handleConnectionStateChange(tabServer.id, connected, error)}
+                      />
+                    </div>
 
-              {(activeTab.activeView === 'sftp' || activeTab.activeView === 'both') && (
-                <div className={`${activeTab.activeView === 'both' ? 'w-2/5' : 'w-full'} h-full flex flex-col min-w-0`}>
-                  <SFTPManager server={activeServer} theme={theme} lang={lang} />
-                </div>
-              )}
-            </div>
+                    {isActive && (tab.activeView === 'sftp' || tab.activeView === 'both') && (
+                      <div className={`${tab.activeView === 'both' ? 'w-2/5' : 'w-full'} h-full flex flex-col min-w-0`}>
+                        <SFTPManager server={tabServer} theme={theme} lang={lang} />
+                      </div>
+                    )}
+                  </div>
 
-            <ServerMonitor serverName={activeServer.name} theme={theme} lang={lang} />
-          </div>
+                  <ServerMonitor serverName={tabServer.name} theme={theme} lang={lang} />
+                </div>
+              );
+            })}
+          </>
         ) : (
           <div className={`flex-1 flex flex-col items-center justify-center p-8 text-center font-mono ${
             isLight ? 'bg-[#f8fafc] text-slate-500' : 'bg-[#09090b] text-zinc-500'

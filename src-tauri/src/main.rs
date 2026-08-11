@@ -2,15 +2,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use ssh2::{OpenFlags, OpenType, Session};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static TEMP_KEY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static TERMINAL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const MAX_SFTP_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(serde::Serialize)]
@@ -223,6 +226,226 @@ fn connect_and_authenticate(credentials: &SshCredentials) -> Result<Session, Str
     Ok(session)
 }
 
+fn run_terminal_session(
+    credentials: SshCredentials,
+    cols: u32,
+    rows: u32,
+    receiver: mpsc::Receiver<TerminalCommand>,
+    on_event: tauri::ipc::Channel<TerminalEvent>,
+) -> Result<Option<i32>, String> {
+    let started_at = Instant::now();
+    let session = connect_and_authenticate(&credentials)?;
+    let banner = session.banner().unwrap_or("SSH-2.0").trim().to_string();
+    let mut channel = session
+        .channel_session()
+        .map_err(|error| format!("创建 SSH 终端通道失败: {}", error))?;
+    channel
+        .request_pty(
+            "xterm-256color",
+            None,
+            Some((cols.clamp(1, 1000), rows.clamp(1, 1000), 0, 0)),
+        )
+        .map_err(|error| format!("申请远程 PTY 失败: {}", error))?;
+    channel
+        .shell()
+        .map_err(|error| format!("启动远程交互式 Shell 失败: {}", error))?;
+    on_event
+        .send(TerminalEvent::Connected {
+            banner,
+            latency_ms: started_at.elapsed().as_millis(),
+        })
+        .map_err(|error| format!("发送终端连接事件失败: {}", error))?;
+
+    session.set_blocking(false);
+    let mut output_buffer = [0_u8; 32 * 1024];
+    loop {
+        for _ in 0..64 {
+            match receiver.try_recv() {
+                Ok(TerminalCommand::Input(data)) => {
+                    if data.is_empty() {
+                        continue;
+                    }
+                    session.set_blocking(true);
+                    let write_result = channel.write_all(&data).and_then(|_| channel.flush());
+                    session.set_blocking(false);
+                    write_result.map_err(|error| format!("发送终端输入失败: {}", error))?;
+                }
+                Ok(TerminalCommand::Resize { cols, rows }) => {
+                    session.set_blocking(true);
+                    let resize_result = channel.request_pty_size(
+                        cols.clamp(1, 1000),
+                        rows.clamp(1, 1000),
+                        None,
+                        None,
+                    );
+                    session.set_blocking(false);
+                    resize_result.map_err(|error| format!("调整远程 PTY 尺寸失败: {}", error))?;
+                }
+                Ok(TerminalCommand::Close) | Err(mpsc::TryRecvError::Disconnected) => {
+                    session.set_blocking(true);
+                    let _ = channel.send_eof();
+                    let _ = channel.close();
+                    return Ok(None);
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+            }
+        }
+
+        let mut received_output = false;
+        loop {
+            match channel.read(&mut output_buffer) {
+                Ok(0) => break,
+                Ok(read_count) => {
+                    received_output = true;
+                    on_event
+                        .send(TerminalEvent::Output {
+                            data: output_buffer[..read_count].to_vec(),
+                        })
+                        .map_err(|error| format!("发送终端输出事件失败: {}", error))?;
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    break;
+                }
+                Err(error) => return Err(format!("读取远程终端输出失败: {}", error)),
+            }
+        }
+
+        if channel.eof() {
+            session.set_blocking(true);
+            let _ = channel.wait_close();
+            return channel
+                .exit_status()
+                .map(Some)
+                .map_err(|error| format!("读取远程 Shell 退出状态失败: {}", error));
+        }
+        if !received_output {
+            thread::sleep(Duration::from_millis(8));
+        }
+    }
+}
+
+#[tauri::command]
+fn open_ssh_terminal(
+    state: tauri::State<'_, TerminalRegistry>,
+    host: String,
+    port: u16,
+    username: String,
+    password: Option<String>,
+    private_key: Option<String>,
+    auth_type: String,
+    cols: u32,
+    rows: u32,
+    on_event: tauri::ipc::Channel<TerminalEvent>,
+) -> Result<String, String> {
+    let session_id = format!(
+        "terminal-{}-{}",
+        std::process::id(),
+        TERMINAL_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    let credentials = SshCredentials {
+        host,
+        port,
+        username,
+        password,
+        private_key,
+        auth_type,
+    };
+    let (sender, receiver) = mpsc::channel();
+    state
+        .0
+        .lock()
+        .map_err(|_| "终端会话注册表已损坏".to_string())?
+        .insert(session_id.clone(), sender);
+
+    let registry = state.inner().clone();
+    let thread_registry = registry.clone();
+    let thread_session_id = session_id.clone();
+    let spawn_result = thread::Builder::new()
+        .name(format!("ssh-pty-{}", session_id))
+        .spawn(move || {
+            let result = run_terminal_session(credentials, cols, rows, receiver, on_event.clone());
+            match result {
+                Ok(exit_status) => {
+                    let _ = on_event.send(TerminalEvent::Closed { exit_status });
+                }
+                Err(message) => {
+                    let _ = on_event.send(TerminalEvent::Error {
+                        message: message.clone(),
+                    });
+                    let _ = on_event.send(TerminalEvent::Closed { exit_status: None });
+                }
+            }
+            if let Ok(mut sessions) = thread_registry.0.lock() {
+                sessions.remove(&thread_session_id);
+            }
+        });
+
+    if let Err(error) = spawn_result {
+        if let Ok(mut sessions) = registry.0.lock() {
+            sessions.remove(&session_id);
+        }
+        return Err(format!("启动 SSH 终端线程失败: {}", error));
+    }
+    Ok(session_id)
+}
+
+fn terminal_sender(
+    state: &tauri::State<'_, TerminalRegistry>,
+    session_id: &str,
+) -> Result<mpsc::Sender<TerminalCommand>, String> {
+    state
+        .0
+        .lock()
+        .map_err(|_| "终端会话注册表已损坏".to_string())?
+        .get(session_id)
+        .cloned()
+        .ok_or_else(|| "终端会话不存在或已经关闭".to_string())
+}
+
+#[tauri::command]
+fn write_ssh_terminal(
+    state: tauri::State<'_, TerminalRegistry>,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
+    terminal_sender(&state, &session_id)?
+        .send(TerminalCommand::Input(data.into_bytes()))
+        .map_err(|_| "终端会话已经断开".to_string())
+}
+
+#[tauri::command]
+fn resize_ssh_terminal(
+    state: tauri::State<'_, TerminalRegistry>,
+    session_id: String,
+    cols: u32,
+    rows: u32,
+) -> Result<(), String> {
+    terminal_sender(&state, &session_id)?
+        .send(TerminalCommand::Resize { cols, rows })
+        .map_err(|_| "终端会话已经断开".to_string())
+}
+
+#[tauri::command]
+fn close_ssh_terminal(
+    state: tauri::State<'_, TerminalRegistry>,
+    session_id: String,
+) -> Result<(), String> {
+    let sender = state
+        .0
+        .lock()
+        .map_err(|_| "终端会话注册表已损坏".to_string())?
+        .remove(&session_id);
+    if let Some(sender) = sender {
+        let _ = sender.send(TerminalCommand::Close);
+    }
+    Ok(())
+}
+
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
@@ -253,6 +476,67 @@ fn remote_join(parent: &str, name: &str) -> String {
     } else {
         format!("{}/{}", parent.trim_end_matches('/'), name)
     }
+}
+
+fn validate_remote_operation_path(path: &str) -> Result<&str, String> {
+    let path = path.trim().trim_end_matches('/');
+    let contains_navigation = path
+        .split('/')
+        .any(|component| matches!(component, "." | ".."));
+    let is_windows_root = path.len() == 2 && path.ends_with(':');
+    if path.is_empty() || path == "~" || contains_navigation || is_windows_root {
+        return Err("禁止对远程根目录或未明确的路径执行此操作".to_string());
+    }
+    Ok(path)
+}
+
+fn remove_sftp_path_recursive(sftp: &ssh2::Sftp, path: &Path) -> Result<(), String> {
+    let stat = sftp
+        .lstat(path)
+        .map_err(|error| format!("读取远程路径 '{}' 失败: {}", path.display(), error))?;
+    if !stat.is_dir() {
+        return sftp
+            .unlink(path)
+            .map_err(|error| format!("删除远程文件 '{}' 失败: {}", path.display(), error));
+    }
+
+    let children = sftp
+        .readdir(path)
+        .map_err(|error| format!("读取远程目录 '{}' 失败: {}", path.display(), error))?;
+    for (child_path, _) in children {
+        remove_sftp_path_recursive(sftp, &child_path)?;
+    }
+    sftp.rmdir(path)
+        .map_err(|error| format!("删除远程目录 '{}' 失败: {}", path.display(), error))
+}
+
+#[derive(Clone, Default)]
+struct TerminalRegistry(Arc<Mutex<HashMap<String, mpsc::Sender<TerminalCommand>>>>);
+
+enum TerminalCommand {
+    Input(Vec<u8>),
+    Resize { cols: u32, rows: u32 },
+    Close,
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum TerminalEvent {
+    Connected {
+        banner: String,
+        #[serde(rename = "latencyMs")]
+        latency_ms: u128,
+    },
+    Output {
+        data: Vec<u8>,
+    },
+    Error {
+        message: String,
+    },
+    Closed {
+        #[serde(rename = "exitStatus")]
+        exit_status: Option<i32>,
+    },
 }
 
 fn validate_relative_remote_path(path: &str) -> Result<Vec<&str>, String> {
@@ -865,6 +1149,117 @@ async fn upload_sftp_local_paths(
 }
 
 #[tauri::command]
+async fn delete_sftp_path(
+    host: String,
+    port: u16,
+    username: String,
+    password: Option<String>,
+    private_key: Option<String>,
+    auth_type: String,
+    path: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let remote_path = validate_remote_operation_path(&path)?;
+        let credentials = SshCredentials {
+            host,
+            port,
+            username,
+            password,
+            private_key,
+            auth_type,
+        };
+        let session = connect_and_authenticate(&credentials)?;
+        let sftp = session
+            .sftp()
+            .map_err(|error| format!("初始化 SFTP 会话失败: {}", error))?;
+        remove_sftp_path_recursive(&sftp, Path::new(remote_path))
+    })
+    .await
+    .map_err(|error| format!("SFTP 删除任务异常: {}", error))?
+}
+
+#[tauri::command]
+async fn download_sftp_directory(
+    host: String,
+    port: u16,
+    username: String,
+    password: Option<String>,
+    private_key: Option<String>,
+    auth_type: String,
+    path: String,
+) -> Result<SftpDownloadResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let remote_path = validate_remote_operation_path(&path)?;
+        let (parent_path, directory_name) = remote_path
+            .rsplit_once('/')
+            .map(|(parent, name)| (if parent.is_empty() { "/" } else { parent }, name))
+            .unwrap_or((".", remote_path));
+        if directory_name.is_empty() {
+            return Err("无法识别需要下载的远程目录名称".to_string());
+        }
+
+        let credentials = SshCredentials {
+            host,
+            port,
+            username,
+            password,
+            private_key,
+            auth_type,
+        };
+        let session = connect_and_authenticate(&credentials)?;
+        let mut channel = session
+            .channel_session()
+            .map_err(|error| format!("创建目录归档通道失败: {}", error))?;
+        let command = format!(
+            "cd -- {} && tar -czf - -- {}",
+            shell_quote(parent_path),
+            shell_quote(directory_name)
+        );
+        channel
+            .exec(&command)
+            .map_err(|error| format!("启动远程目录归档失败: {}", error))?;
+
+        let mut content = Vec::new();
+        Read::by_ref(&mut channel)
+            .take((MAX_SFTP_TRANSFER_BYTES + 1) as u64)
+            .read_to_end(&mut content)
+            .map_err(|error| format!("读取远程目录归档失败: {}", error))?;
+        if content.len() > MAX_SFTP_TRANSFER_BYTES {
+            let _ = channel.close();
+            return Err(format!(
+                "目录压缩后超过 {} MB 下载限制",
+                MAX_SFTP_TRANSFER_BYTES / 1024 / 1024
+            ));
+        }
+
+        let mut stderr = String::new();
+        channel
+            .stderr()
+            .read_to_string(&mut stderr)
+            .map_err(|error| format!("读取远程目录归档错误失败: {}", error))?;
+        channel
+            .wait_close()
+            .map_err(|error| format!("关闭目录归档通道失败: {}", error))?;
+        let exit_status = channel
+            .exit_status()
+            .map_err(|error| format!("读取目录归档状态失败: {}", error))?;
+        if exit_status != 0 {
+            return Err(format!(
+                "远程目录打包失败，请确认服务器已安装 tar: {}",
+                stderr.trim()
+            ));
+        }
+
+        Ok(SftpDownloadResult {
+            name: format!("{}.tar.gz", directory_name),
+            content,
+        })
+    })
+    .await
+    .map_err(|error| format!("SFTP 目录下载任务异常: {}", error))?
+}
+
+#[tauri::command]
 async fn download_sftp_file(
     host: String,
     port: u16,
@@ -929,15 +1324,22 @@ async fn download_sftp_file(
 
 fn main() {
     tauri::Builder::default()
+        .manage(TerminalRegistry::default())
         .invoke_handler(tauri::generate_handler![
             test_ssh_connection,
             execute_ssh_command,
             complete_ssh_input,
+            open_ssh_terminal,
+            write_ssh_terminal,
+            resize_ssh_terminal,
+            close_ssh_terminal,
             list_sftp_directory,
             create_sftp_directory,
             create_sftp_directory_tree,
             upload_sftp_file,
             upload_sftp_local_paths,
+            delete_sftp_path,
+            download_sftp_directory,
             download_sftp_file
         ])
         .run(tauri::generate_context!())

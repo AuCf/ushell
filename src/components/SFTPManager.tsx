@@ -58,6 +58,8 @@ interface DroppedDirectoryEntry extends DroppedEntry {
 interface ConfirmDialogState {
   title?: string;
   message: string;
+  confirmText?: string;
+  isDanger?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -105,7 +107,7 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
   const [isNewFolderModalOpen, setIsNewFolderModalOpen] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [transfer, setTransfer] = useState<{
-    kind: 'upload' | 'download';
+    kind: 'upload' | 'download' | 'delete';
     fileName: string;
     completed?: number;
     total?: number;
@@ -120,11 +122,18 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
   const isLight = theme === 'light';
   const t = i18n[lang];
 
-  const askConfirmation = (message: string, title?: string): Promise<boolean> => {
+  const askConfirmation = (
+    message: string,
+    title?: string,
+    isDanger = false,
+    confirmText?: string
+  ): Promise<boolean> => {
     return new Promise((resolve) => {
       setConfirmDialog({
         title,
         message,
+        confirmText,
+        isDanger,
         onConfirm: () => {
           setConfirmDialog(null);
           resolve(true);
@@ -402,23 +411,60 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
 
   const handleDownload = async (file: SFTPItem, event: React.MouseEvent) => {
     event.stopPropagation();
-    if (file.isDirectory || transfer) return;
+    if (transfer) return;
 
     setTransfer({ kind: 'download', fileName: file.name });
     setError('');
     try {
-      const result = await invoke<SftpDownloadResult>('download_sftp_file', {
-        ...connectionArgs(),
-        path: file.path
-      });
+      const result = await invoke<SftpDownloadResult>(
+        file.isDirectory ? 'download_sftp_directory' : 'download_sftp_file',
+        {
+          ...connectionArgs(),
+          path: file.path
+        }
+      );
       const blobUrl = URL.createObjectURL(new Blob([new Uint8Array(result.content)], {
-        type: 'application/octet-stream'
+        type: file.isDirectory ? 'application/gzip' : 'application/octet-stream'
       }));
       const anchor = document.createElement('a');
       anchor.href = blobUrl;
       anchor.download = result.name;
       anchor.click();
       window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+    } catch (err: any) {
+      setError(typeof err === 'string' ? err : (err?.message || String(err)));
+    } finally {
+      setTransfer(null);
+    }
+  };
+
+  const handleDelete = async (file: SFTPItem, event: React.MouseEvent) => {
+    event.stopPropagation();
+    if (transfer) return;
+
+    const confirmed = await askConfirmation(
+      file.isDirectory
+        ? (lang === 'zh'
+          ? `将递归删除远程目录“${file.name}”及其中全部内容。此操作无法撤销，确定继续吗？`
+          : `Delete the remote folder “${file.name}” and everything inside it? This cannot be undone.`)
+        : (lang === 'zh'
+          ? `确定删除远程文件“${file.name}”吗？此操作无法撤销。`
+          : `Delete the remote file “${file.name}”? This cannot be undone.`),
+      lang === 'zh' ? '删除确认' : 'Confirm deletion',
+      true,
+      lang === 'zh' ? '确认删除' : 'Delete'
+    );
+    if (!confirmed) return;
+
+    setTransfer({ kind: 'delete', fileName: file.name });
+    setError('');
+    try {
+      await invoke('delete_sftp_path', {
+        ...connectionArgs(),
+        path: file.path
+      });
+      setSelectedItem(null);
+      await loadDirectory(currentPath);
     } catch (err: any) {
       setError(typeof err === 'string' ? err : (err?.message || String(err)));
     } finally {
@@ -512,7 +558,9 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
               ? (lang === 'zh'
                 ? `正在上传 ${transfer.fileName}${transfer.total ? `（${transfer.completed}/${transfer.total}）` : ''}`
                 : `Uploading ${transfer.fileName}${transfer.total ? ` (${transfer.completed}/${transfer.total}）` : ''}`)
-              : (lang === 'zh' ? `正在下载 ${transfer.fileName}` : `Downloading ${transfer.fileName}`)}
+              : transfer.kind === 'download'
+                ? (lang === 'zh' ? `正在下载 ${transfer.fileName}` : `Downloading ${transfer.fileName}`)
+                : (lang === 'zh' ? `正在删除 ${transfer.fileName}` : `Deleting ${transfer.fileName}`)}
           </span>
         </div>
       )}
@@ -563,25 +611,27 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
                   <td className="py-1 px-1.5 text-right">
                     {file.name !== '..' && (
                       <div className="flex items-center justify-end gap-0.5">
-                        {!file.isDirectory && (
-                          <button
-                            onClick={(event) => handleDownload(file, event)}
-                            disabled={Boolean(transfer)}
-                            title={lang === 'zh' ? `下载 ${file.name}` : `Download ${file.name}`}
-                            className={`opacity-0 group-hover:opacity-100 p-0.5 rounded disabled:opacity-30 ${
-                              isLight ? 'hover:bg-slate-300 text-slate-500' : 'hover:bg-[#27272a] text-zinc-500 hover:text-zinc-200'
-                            }`}
-                          >
-                            <Download className="w-3 h-3" />
-                          </button>
-                        )}
                         <button
-                          disabled
-                          onClick={(e) => e.stopPropagation()}
-                          title={lang === 'zh' ? '远程删除尚未启用' : 'Remote delete is not enabled'}
-                          className="opacity-0 group-hover:opacity-30 p-0.5 cursor-not-allowed"
+                          onClick={(event) => handleDownload(file, event)}
+                          disabled={Boolean(transfer)}
+                          title={lang === 'zh'
+                            ? `${file.isDirectory ? '打包下载目录' : '下载'} ${file.name}`
+                            : `${file.isDirectory ? 'Download folder' : 'Download'} ${file.name}`}
+                          className={`opacity-0 group-hover:opacity-100 p-0.5 rounded disabled:opacity-30 ${
+                            isLight ? 'hover:bg-slate-300 text-slate-500' : 'hover:bg-[#27272a] text-zinc-500 hover:text-zinc-200'
+                          }`}
                         >
-                          <Trash2 className="w-3 h-3 text-zinc-400" />
+                          <Download className="w-3 h-3" />
+                        </button>
+                        <button
+                          onClick={(event) => handleDelete(file, event)}
+                          disabled={Boolean(transfer)}
+                          title={lang === 'zh' ? `删除 ${file.name}` : `Delete ${file.name}`}
+                          className={`opacity-0 group-hover:opacity-100 p-0.5 rounded disabled:opacity-30 ${
+                            isLight ? 'hover:bg-red-100 text-red-500' : 'hover:bg-red-950/50 text-red-400'
+                          }`}
+                        >
+                          <Trash2 className="w-3 h-3" />
                         </button>
                       </div>
                     )}
@@ -613,9 +663,10 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
           isOpen={true}
           title={confirmDialog.title}
           message={confirmDialog.message}
+          confirmText={confirmDialog.confirmText}
           theme={theme}
           lang={lang}
-          isDanger={true}
+          isDanger={confirmDialog.isDanger}
           onConfirm={confirmDialog.onConfirm}
           onCancel={confirmDialog.onCancel}
         />
