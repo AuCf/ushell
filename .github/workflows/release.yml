@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  release:
+  publish-tauri:
     permissions:
       contents: write
 
@@ -16,9 +16,7 @@ jobs:
       matrix:
         include:
           - platform: 'macos-latest'
-            target: 'aarch64-apple-darwin'
           - platform: 'windows-latest'
-            target: 'x86_64-pc-windows-msvc'
 
     runs-on: ${{ matrix.platform }}
 
@@ -30,15 +28,12 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
 
-      - name: Install Rust Stable
+      - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
       - name: Install Frontend Dependencies
-        run: npm ci
+        run: npm install
 
       - name: Build and Publish Release
         uses: tauri-apps/tauri-action@v2
@@ -47,14 +42,6 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'uShell ${{ github.ref_name }}'
-          releaseBody: |
-            ## ⚡ uShell ${{ github.ref_name }} Release
-            
-            Ultra-Minimalist Geek SSH & SFTP Desktop Client.
-            
-            ### 📦 Binaries Included:
-            - **Windows**: `.exe` standalone / installer & `.msi`
-            - **macOS**: `.dmg` / `.app`
+          releaseBody: 'uShell Ultra-Minimalist SSH & SFTP Desktop Client'
           releaseDraft: false
           prerelease: false
-          args: --target ${{ matrix.target }}
