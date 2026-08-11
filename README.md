@@ -14,7 +14,9 @@
 
 大多数传统 SSH 客户端（如 FinalShell、Xshell）界面繁复或风格过时。**uShell** 采用类似 **Ghostty / Neovim** 的超极简暗黑极客风格设计，剥离了一切臃肿装饰，结合 **Tauri v2 (Rust)** 带来轻量高效的桌面终端体验。
 
-![uShell Preview](https://raw.githubusercontent.com/username/ushell/main/docs/preview.png)
+![uShell Terminal Preview](docs/preview01.png)
+
+![uShell SFTP & Copilot Preview](docs/preview02.png)
 
 ---
 
@@ -48,8 +50,8 @@
 | 文件名 | 类型 | 说明 |
 | :--- | :--- | :--- |
 | **`ushell.exe`** | 绿色免安装版 | 直接双击即可运行 |
-| **`uShell_1.0.0_x64-setup.exe`** | NSIS 安装包 | 标准 Windows 安装向导 |
-| **`uShell_1.0.0_x64_en-US.msi`** | MSI 安装包 | 企业级 MSI 部署包 |
+| **`uShell_0.0.1_x64-setup.exe`** | NSIS 安装包 | 标准 Windows 安装向导 |
+| **`uShell_0.0.1_x64_en-US.msi`** | MSI 安装包 | 企业级 MSI 部署包 |
 
 ---
 
@@ -64,7 +66,7 @@
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/your-username/ushell.git
+git clone https://github.com/AuCf/ushell.git
 cd ushell
 
 # 2. 安装依赖
