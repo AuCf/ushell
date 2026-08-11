@@ -33,36 +33,39 @@ export const TabBar: React.FC<TabBarProps> = ({
   const isLight = theme === 'light';
   const t = i18n[lang];
 
-  // Tauri Window Control Handlers
-  const handleWindowMinimize = (e: React.MouseEvent) => {
+  // Tauri Window Control Handlers (Async)
+  const handleWindowMinimize = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      getCurrentWindow().minimize();
+      const appWin = getCurrentWindow();
+      await appWin.minimize();
     } catch (err) {
       try {
-        (window as any).__TAURI__?.window?.getCurrentWindow()?.minimize();
+        await (window as any).__TAURI__?.window?.getCurrentWindow()?.minimize();
       } catch (e) {}
     }
   };
 
-  const handleWindowMaximize = (e: React.MouseEvent) => {
+  const handleWindowMaximize = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      getCurrentWindow().toggleMaximize();
+      const appWin = getCurrentWindow();
+      await appWin.toggleMaximize();
     } catch (err) {
       try {
-        (window as any).__TAURI__?.window?.getCurrentWindow()?.toggleMaximize();
+        await (window as any).__TAURI__?.window?.getCurrentWindow()?.toggleMaximize();
       } catch (e) {}
     }
   };
 
-  const handleWindowClose = (e: React.MouseEvent) => {
+  const handleWindowClose = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      getCurrentWindow().close();
+      const appWin = getCurrentWindow();
+      await appWin.close();
     } catch (err) {
       try {
-        (window as any).__TAURI__?.window?.getCurrentWindow()?.close() || window.close();
+        await (window as any).__TAURI__?.window?.getCurrentWindow()?.close();
       } catch (e) {
         window.close();
       }
@@ -71,12 +74,11 @@ export const TabBar: React.FC<TabBarProps> = ({
 
   return (
     <div 
-      data-tauri-drag-region 
       className={`h-8 border-b flex items-center justify-between px-1 select-none font-mono text-[11px] z-10 cursor-default transition-colors ${
         isLight ? 'bg-[#f1f5f9] border-[#e2e8f0] text-slate-700' : 'bg-[#0c0c0e] border-[#1a1a1e] text-zinc-300'
       }`}
     >
-      {/* Tab List & Empty Drag Space */}
+      {/* Tab List & Draggable Top Bar Area */}
       <div className="flex items-center gap-0.5 overflow-x-auto no-scrollbar flex-1 h-full" data-tauri-drag-region>
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId;
@@ -118,12 +120,12 @@ export const TabBar: React.FC<TabBarProps> = ({
           <Plus className="w-3.5 h-3.5" />
         </button>
 
-        {/* Empty drag space between tabs and right controls */}
-        <div className="flex-1 h-full" data-tauri-drag-region />
+        {/* Draggable Window Drag Space between tabs and right buttons */}
+        <div className="flex-1 h-full min-w-[30px]" data-tauri-drag-region />
       </div>
 
       {/* View Switcher, Language Toggle, Theme Toggle & Non-Drag Window Controls */}
-      <div className="flex items-center gap-2 z-20 pointer-events-auto" data-tauri-drag-region={false}>
+      <div className="flex items-center gap-2 z-30 shrink-0">
         {activeTab && (
           <div className={`flex items-center gap-0.5 p-0.5 rounded border text-[10px] font-mono ${
             isLight ? 'bg-white border-slate-200' : 'bg-[#09090b] border-[#1a1a1e]'
@@ -186,14 +188,14 @@ export const TabBar: React.FC<TabBarProps> = ({
           {isLight ? <Moon className="w-3.5 h-3.5" /> : <Sun className="w-3.5 h-3.5" />}
         </button>
 
-        {/* Window Controls (Explicitly exempted from drag region) */}
+        {/* Window Controls (Explicitly separated from drag region) */}
         <div 
-          data-tauri-drag-region={false}
           className={`flex items-center gap-0.5 border-l pl-1 z-30 ${
             isLight ? 'border-slate-300' : 'border-[#1a1a1e]'
           }`}
         >
           <button
+            type="button"
             onClick={handleWindowMinimize}
             className={`p-1.5 transition-colors cursor-pointer ${
               isLight ? 'hover:bg-slate-200 text-slate-600' : 'hover:bg-[#1f1f24] text-zinc-500 hover:text-zinc-200'
@@ -204,6 +206,7 @@ export const TabBar: React.FC<TabBarProps> = ({
           </button>
 
           <button
+            type="button"
             onClick={handleWindowMaximize}
             className={`p-1.5 transition-colors cursor-pointer ${
               isLight ? 'hover:bg-slate-200 text-slate-600' : 'hover:bg-[#1f1f24] text-zinc-500 hover:text-zinc-200'
@@ -214,6 +217,7 @@ export const TabBar: React.FC<TabBarProps> = ({
           </button>
 
           <button
+            type="button"
             onClick={handleWindowClose}
             className="p-1.5 hover:bg-red-500 text-zinc-500 hover:text-white transition-colors cursor-pointer"
             title="关闭窗口"
