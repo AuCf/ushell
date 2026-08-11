@@ -46,12 +46,75 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
   const lastErrorOutput = useRef<string>('');
   const isConnected = useRef(false);
   const isExecuting = useRef(false);
+  const isCompleting = useRef(false);
 
   const isLight = theme === 'light';
   const t = i18n[lang];
 
   const promptPrefix = () => {
     return `\x1b[1;32m${server.username}@${server.host}\x1b[0m:\x1b[1;34m${currentDir.current}\x1b[0m$ `;
+  };
+
+  const redrawCurrentInput = (term: XTerm, line: string) => {
+    term.write(`\r\x1b[2K${promptPrefix()}${line}`);
+  };
+
+  const longestCommonPrefix = (values: string[]) => {
+    if (values.length === 0) return '';
+    let prefix = values[0];
+    for (let index = 1; index < values.length && prefix; index += 1) {
+      while (!values[index].startsWith(prefix)) prefix = prefix.slice(0, -1);
+    }
+    return prefix;
+  };
+
+  const completeCurrentInput = async (term: XTerm) => {
+    if (!isConnected.current || isExecuting.current || isCompleting.current) {
+      term.write('\x07');
+      return;
+    }
+
+    const lineSnapshot = currentLineBuffer.current;
+    const token = lineSnapshot.match(/[^\s]*$/)?.[0] || '';
+    isCompleting.current = true;
+    try {
+      const candidates = await invoke<string[]>('complete_ssh_input', {
+        host: server.host,
+        port: Number(server.port),
+        username: server.username,
+        password: server.authType === 'password' ? (server.password || null) : null,
+        privateKey: server.authType === 'privateKey' ? (server.privateKey || null) : null,
+        authType: server.authType,
+        line: lineSnapshot,
+        currentDir: currentDir.current
+      });
+      if (currentLineBuffer.current !== lineSnapshot) return;
+      if (candidates.length === 0) {
+        term.write('\x07');
+        return;
+      }
+
+      const commonPrefix = longestCommonPrefix(candidates);
+      if (candidates.length === 1 || commonPrefix.length > token.length) {
+        const completedToken = candidates.length === 1 ? candidates[0] : commonPrefix;
+        const suffix = candidates.length === 1 && !completedToken.endsWith('/') ? ' ' : '';
+        const completedLine = `${lineSnapshot.slice(0, lineSnapshot.length - token.length)}${completedToken}${suffix}`;
+        currentLineBuffer.current = completedLine;
+        redrawCurrentInput(term, completedLine);
+        return;
+      }
+
+      term.writeln('');
+      term.writeln(candidates.join('  '));
+      term.write(promptPrefix() + currentLineBuffer.current);
+    } catch (err: any) {
+      const message = typeof err === 'string' ? err : (err?.message || String(err));
+      term.writeln('');
+      term.writeln(`\x1b[31m${message}\x1b[0m`);
+      term.write(promptPrefix() + currentLineBuffer.current);
+    } finally {
+      isCompleting.current = false;
+    }
   };
 
   useEffect(() => {
@@ -187,6 +250,8 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
       } else if (data === '\x0c') {
         term.clear();
         term.write(promptPrefix() + currentLineBuffer.current);
+      } else if (data === '\t') {
+        void completeCurrentInput(term);
       } else if (data === '\x1b[A') {
         if (commandHistory.current.length > 0) {
           const nextIdx = historyIdx.current < commandHistory.current.length - 1 ? historyIdx.current + 1 : historyIdx.current;
@@ -209,7 +274,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
           clearLineInput(term);
           currentLineBuffer.current = '';
         }
-      } else if (data >= ' ' || data === '\t') {
+      } else if (data >= ' ') {
         currentLineBuffer.current += data;
         term.write(data);
       }

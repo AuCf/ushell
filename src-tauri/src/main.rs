@@ -451,6 +451,102 @@ async fn execute_ssh_command(
 }
 
 #[tauri::command]
+async fn complete_ssh_input(
+    host: String,
+    port: u16,
+    username: String,
+    password: Option<String>,
+    private_key: Option<String>,
+    auth_type: String,
+    line: String,
+    current_dir: String,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let prefix = if line.chars().last().is_some_and(char::is_whitespace) {
+            ""
+        } else {
+            line.split_whitespace().last().unwrap_or("")
+        };
+        let prefix_start = line.len().saturating_sub(prefix.len());
+        let is_command_position = line[..prefix_start].trim().is_empty();
+        let quoted_prefix = shell_quote(prefix);
+        let completion_script = if is_command_position {
+            format!(
+                "compgen -A command -- {} | LC_ALL=C sort -u | head -n 200",
+                quoted_prefix
+            )
+        } else {
+            format!(
+                "while IFS= read -r item; do if [ -d \"$item\" ]; then printf '%s/\\n' \"$item\"; else printf '%s\\n' \"$item\"; fi; done < <(compgen -f -- {}) | LC_ALL=C sort -u | head -n 200",
+                quoted_prefix
+            )
+        };
+
+        let credentials = SshCredentials {
+            host,
+            port,
+            username,
+            password,
+            private_key,
+            auth_type,
+        };
+        let session = connect_and_authenticate(&credentials)?;
+        let mut channel = session
+            .channel_session()
+            .map_err(|error| format!("创建 SSH 补全通道失败: {}", error))?;
+        let target_dir = if current_dir.trim() == "~" {
+            "$HOME".to_string()
+        } else {
+            shell_quote(if current_dir.trim().is_empty() {
+                "."
+            } else {
+                current_dir.trim()
+            })
+        };
+        let command = format!(
+            "cd -- {} && bash -c {}",
+            target_dir,
+            shell_quote(&completion_script)
+        );
+        channel
+            .exec(&command)
+            .map_err(|error| format!("发送 SSH 补全请求失败: {}", error))?;
+
+        let mut stdout = String::new();
+        channel
+            .read_to_string(&mut stdout)
+            .map_err(|error| format!("读取 SSH 补全结果失败: {}", error))?;
+        let mut stderr = String::new();
+        channel
+            .stderr()
+            .read_to_string(&mut stderr)
+            .map_err(|error| format!("读取 SSH 补全错误失败: {}", error))?;
+        channel
+            .wait_close()
+            .map_err(|error| format!("关闭 SSH 补全通道失败: {}", error))?;
+        let exit_status = channel
+            .exit_status()
+            .map_err(|error| format!("读取 SSH 补全状态失败: {}", error))?;
+        if exit_status != 0 && !stderr.trim().is_empty() {
+            return Err(format!("远程补全失败: {}", stderr.trim()));
+        }
+
+        Ok(stdout
+            .lines()
+            .map(|candidate| {
+                candidate
+                    .chars()
+                    .filter(|character| !character.is_control())
+                    .collect::<String>()
+            })
+            .filter(|candidate| !candidate.is_empty())
+            .collect())
+    })
+    .await
+    .map_err(|error| format!("SSH 补全任务异常: {}", error))?
+}
+
+#[tauri::command]
 async fn list_sftp_directory(
     host: String,
     port: u16,
@@ -836,6 +932,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             test_ssh_connection,
             execute_ssh_command,
+            complete_ssh_input,
             list_sftp_directory,
             create_sftp_directory,
             create_sftp_directory_tree,
