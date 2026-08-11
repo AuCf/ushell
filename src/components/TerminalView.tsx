@@ -366,7 +366,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
 
         <div className="flex items-center gap-1.5">
           <button
-            onClick={() => onAskAIWithContext(lastErrorOutput.current || recentOutput.current || `SSH session on ${server.host}:${server.port}`)}
+            onClick={() => onAskAIWithContext(lastErrorOutput.current || undefined)}
             className={`flex items-center gap-1 px-2 py-0.5 border rounded text-[10px] ${
               isLight ? 'bg-purple-50 border-purple-300 text-purple-700 hover:bg-purple-100' : 'bg-[#1f1d2b] hover:bg-[#2b273d] border-purple-500/30 text-purple-300'
             }`}

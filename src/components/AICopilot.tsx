@@ -3,7 +3,7 @@ import { AICopilotMessage, AIConfig } from '../types';
 import { queryAICopilot, getStoredAIConfig } from '../services/aiService';
 import { AIConfigModal } from './AIConfigModal';
 import { Language, i18n } from '../i18n';
-import { Terminal, Send, X, Copy, Check, Settings, CornerDownLeft } from 'lucide-react';
+import { Terminal, Send, X, Copy, Check, Settings, CornerDownLeft, Trash2 } from 'lucide-react';
 
 interface AICopilotProps {
   isOpen: boolean;
@@ -92,6 +92,17 @@ export const AICopilot: React.FC<AICopilotProps> = ({
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  const handleClearHistory = () => {
+    setMessages([
+      {
+        id: `welcome_${Date.now()}`,
+        role: 'assistant',
+        content: lang === 'zh' ? 'AI 命令面板就绪，历史会话已清空。' : 'AI Command Palette ready. Chat history cleared.',
+        timestamp: Date.now()
+      }
+    ]);
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -110,6 +121,13 @@ export const AICopilot: React.FC<AICopilotProps> = ({
           </div>
 
           <div className="flex items-center gap-1">
+            <button
+              onClick={handleClearHistory}
+              className={`p-1 rounded transition-colors ${isLight ? 'hover:bg-slate-200 text-slate-500 hover:text-slate-900' : 'hover:bg-[#222228] text-zinc-500 hover:text-zinc-300'}`}
+              title={lang === 'zh' ? '清空历史会话' : 'Clear Chat History'}
+            >
+              <Trash2 className="w-3 h-3 text-zinc-400 hover:text-red-400" />
+            </button>
             <button
               onClick={() => setIsConfigModalOpen(true)}
               className={`p-1 rounded ${isLight ? 'hover:bg-slate-200 text-slate-500 hover:text-slate-900' : 'hover:bg-[#222228] text-zinc-500 hover:text-zinc-300'}`}
