@@ -9,7 +9,9 @@ import { ServerMonitor } from './components/ServerMonitor';
 import { AICopilot } from './components/AICopilot';
 import { ServerModal } from './components/ServerModal';
 import { ImportConfigModal } from './components/ImportConfigModal';
+import { UpdateModal } from './components/UpdateModal';
 import { Toast, ToastMessage } from './components/Toast';
+import { checkGitHubUpdate, ReleaseInfo } from './services/updaterService';
 
 export function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
@@ -49,9 +51,29 @@ export function App() {
   const [pendingTerminalCommand, setPendingTerminalCommand] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<ToastMessage | null>(null);
 
+  // GitHub Auto Updater State
+  const [hasUpdate, setHasUpdate] = useState(false);
+  const [releaseInfo, setReleaseInfo] = useState<ReleaseInfo | null>(null);
+  const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
+
   const activeTab = tabs.find(t => t.id === activeTabId);
   const activeServer = servers.find(s => s.id === activeTab?.serverId);
   const t = i18n[lang];
+
+  useEffect(() => {
+    // Check GitHub for new release on startup
+    checkGitHubUpdate().then(res => {
+      if (res.hasUpdate && res.release) {
+        setHasUpdate(true);
+        setReleaseInfo(res.release);
+        showToast(
+          lang === 'zh' ? '发现新版本' : 'New Update Available',
+          `v${res.release.version} ${lang === 'zh' ? '热更新已就绪，点击左上角高亮小黄点即可升级！' : 'is ready to install!'}`,
+          'info'
+        );
+      }
+    });
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('ushell_servers', JSON.stringify(servers));
@@ -227,12 +249,14 @@ export function App() {
         activeServerId={activeServer?.id}
         theme={theme}
         lang={lang}
+        hasUpdate={hasUpdate}
         onConnectServer={handleConnectServer}
         onAddServer={handleOpenAddServer}
         onEditServer={handleOpenEditServer}
         onImportFinalShell={() => setIsImportModalOpen(true)}
         onDeleteServer={handleDeleteServer}
         onOpenAICopilot={() => setIsAICopilotOpen(true)}
+        onOpenUpdateModal={() => setIsUpdateModalOpen(true)}
       />
 
       {/* Main Workspace */}
@@ -351,6 +375,14 @@ export function App() {
         lang={lang}
         onClose={() => setIsImportModalOpen(false)}
         onImportSuccess={handleImportSuccess}
+      />
+
+      <UpdateModal
+        isOpen={isUpdateModalOpen}
+        theme={theme}
+        lang={lang}
+        releaseInfo={releaseInfo}
+        onClose={() => setIsUpdateModalOpen(false)}
       />
 
       <Toast toast={toastMessage} onClose={() => setToastMessage(null)} />

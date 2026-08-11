@@ -1,0 +1,19 @@
+{
+  "version": "0.0.3",
+  "notes": "uShell v0.0.3 正式版更新：支持双向 SSH PTY 实时流、SFTP 拖拽传输与智能检测热更新。",
+  "pub_date": "2026-08-11T15:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "",
+      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.3/uShell_0.0.3_x64-setup.exe"
+    },
+    "darwin-aarch64": {
+      "signature": "",
+      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.3/uShell_0.0.3_aarch64.dmg"
+    },
+    "darwin-x86_64": {
+      "signature": "",
+      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.3/uShell_0.0.3_x64.dmg"
+    }
+  }
+}

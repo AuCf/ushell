@@ -17,12 +17,14 @@ interface SidebarProps {
   activeServerId?: string;
   theme?: 'dark' | 'light';
   lang?: Language;
+  hasUpdate?: boolean;
   onConnectServer: (server: ServerProfile) => void;
   onAddServer: () => void;
   onEditServer: (server: ServerProfile) => void;
   onImportFinalShell: () => void;
   onDeleteServer: (id: string) => void;
   onOpenAICopilot: () => void;
+  onOpenUpdateModal?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -30,12 +32,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeServerId,
   theme = 'dark',
   lang = 'zh',
+  hasUpdate = false,
   onConnectServer,
   onAddServer,
   onEditServer,
   onImportFinalShell,
   onDeleteServer,
-  onOpenAICopilot
+  onOpenAICopilot,
+  onOpenUpdateModal
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
@@ -73,7 +77,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <img src="/ushell_logo.jpg" alt="uShell Logo" className="w-full h-full object-cover" />
           </div>
           <span className={`font-extrabold tracking-wider truncate text-[12px] shrink-0 ${isLight ? 'text-slate-900' : 'text-zinc-100'}`}>uShell</span>
-          <span className={`text-[9px] font-normal shrink-0 ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>v0.0.3</span>
+          
+          {/* Version badge with pulsing amber update dot */}
+          <button
+            onClick={onOpenUpdateModal}
+            className="flex items-center gap-1 hover:opacity-80 transition-opacity cursor-pointer group"
+            title={hasUpdate ? (lang === 'zh' ? '检测到新版本可用！点击进行热更新升级' : 'New version available! Click to update') : `uShell v0.0.3`}
+          >
+            <span className={`text-[9px] font-normal shrink-0 ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>v0.0.3</span>
+            {hasUpdate && (
+              <span className="relative flex h-2 w-2 shrink-0">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.8)]"></span>
+              </span>
+            )}
+          </button>
         </div>
 
         <button
