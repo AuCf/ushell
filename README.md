@@ -1,14 +1,22 @@
-# ⚡ uShell
+<div align="center">
+  <img src="docs/ushell_logo.jpg" alt="uShell Logo" width="96" height="96" style="border-radius: 20px;">
+  <h1>⚡ uShell</h1>
+  <p><b>Ultra-Minimalist Geek SSH & SFTP Desktop Client</b></p>
+  <p>专为开发者与运维工程师打造的极简、无边框、支持 AI 智能辅助的跨平台现代桌面客户端。</p>
 
-> **Ultra-Minimalist Geek SSH & SFTP Desktop Client**  
-> 专为开发者与运维工程师打造的极简、无边框、支持 AI 辅助的跨平台现代桌面客户端。
+  <p>
+    <a href="docs/index.html"><img src="https://img.shields.io/badge/🌐_Official_Website-Docs-emerald.svg?style=for-the-badge" alt="Website"></a>
+    <a href="https://github.com/AuCf/ushell/releases/latest"><img src="https://img.shields.io/badge/Release-v0.0.3-blue.svg?style=for-the-badge" alt="Release"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge" alt="License"></a>
+  </p>
 
-🌐 **官方网站 (Official Website)**: [docs/index.html](docs/index.html)
-
-[![Tauri v2](https://img.shields.io/badge/Tauri-v2.0-blue.svg?style=flat-square&logo=tauri)](https://tauri.app)
-[![React 18](https://img.shields.io/badge/React-18.2-blue.svg?style=flat-square&logo=react)](https://reactjs.org)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.2-blue.svg?style=flat-square&logo=typescript)](https://www.typescriptlang.org)
-[![License MIT](https://img.shields.io/badge/License-MIT-emerald.svg?style=flat-square)](LICENSE)
+  <p>
+    <img src="https://img.shields.io/badge/Tauri-v2.0-blue.svg?style=flat-square&logo=tauri" alt="Tauri">
+    <img src="https://img.shields.io/badge/React-18.2-blue.svg?style=flat-square&logo=react" alt="React">
+    <img src="https://img.shields.io/badge/TypeScript-5.2-blue.svg?style=flat-square&logo=typescript" alt="TypeScript">
+    <img src="https://img.shields.io/badge/TailwindCSS-3.4-blue.svg?style=flat-square&logo=tailwindcss" alt="TailwindCSS">
+  </p>
+</div>
 
 ---
 
@@ -16,44 +24,41 @@
 
 大多数传统 SSH 客户端界面繁复或风格过时。**uShell** 采用类似 **Ghostty / Neovim** 的超极简暗黑极客风格设计，剥离了一切臃肿装饰，结合 **Tauri v2 (Rust)** 带来轻量高效的桌面终端体验。
 
-![uShell Terminal Preview](docs/preview01.png)
-
-![uShell SFTP & Copilot Preview](docs/preview02.png)
+- ⚡ **瞬时启动**：基于 Tauri v2 原生系统调用，资源占用降低 80%。
+- 🎨 **极客暗黑终端绿**：极简平滑界面与防疲劳经典绿配色。
+- 🤖 **AI Copilot**：报错智能抓取排障与指令一键插入。
+- 🔄 **无缝迁移**：一键导入外部 JSON 节点配置与纯文本 IP 列表。
 
 ---
 
 ## ✨ 核心特性
 
 - 🖼️ **全无边框极客设计 (Frameless Window)**
-  - 去除了 Windows 原生白框标题栏，集成原生 `-` 最小化、`□` 最大化、`✕` 关闭窗口按钮与拖拽区域。
-- 🖥️ **VT100 PTY 终端内核 (@xterm/xterm)**
-  - ANSI 全彩渲染、历史命令 (`↑`/`↓`) 导航、`pwd` / `cd` 动态路径指示、`Ctrl+C` 中断与选中文本复制、`Ctrl+V` 粘贴、鼠标右键上下文菜单。
-- 📁 **Ranger 风双视图 SFTP 文件管理器**
-  - 目录树穿梭、`+MKDIR` 新建文件夹、文件传输与实时进度条。
+  - 去除原生白框标题栏，内置集成原生最小化、最大化与关闭按钮，拖拽区与主界面无缝融为一体。
+- 🖥️ **VT100 PTY 终端内核 (xterm.js PTY Stream)**
+  - 真正基于 Rust `ssh2` + Webview Channel 的双向 PTY 数据流通道。支持 ANSI 全彩高亮、Tab 键智能补全、历史命令 (`↑`/`↓`) 导航与上下文右键操作。
+- 📁 **双向 SFTP 文件管理器 (Ranger Style)**
+  - 支持本地文件/文件夹拖拽上传、双向穿梭传输、在线新建目录与下载。
 - 🤖 **AI 命令行助手与智能排错 (AI Copilot & Error Diagnoser)**
-  - 快捷键 `AI:Cmd` 面板，已接入 **DeepSeek / OpenAI / Claude / 本地 Ollama** 大模型 API；支持终端报错一键分析与指令“一键填入终端 (RUN IN TERM)”。
+  - 集成 DeepSeek / OpenAI / Claude / 本地 Ollama 模型。一键抓取终端报错上下文，提供修改方案并支持一键填入终端 (RUN IN TERM)。
 - 🔄 **第三方终端配置一键导入 (External Config Importer)**
   - 无缝解析通用 JSON 配置文件或纯文本 IP 节点列表 (`root@192.168.1.1:22`)。
 - 🎨 **黑白极客双主题 (Dark / Light Theme)**
-  - ☀️ 日间清爽模式与 🌙 暗黑极客模式一键切换，全局组件自适应。
+  - ☀️ 日间清爽模式与 🌙 暗黑极客模式一键切换，全组件自适应高对比度显示。
 - 🌐 **中英文双语支持 (Full i18n)**
-  - 顶栏 `EN` ↔ `中` 一键无缝切换全局文案。
-- 🔒 **Rust 原生 TCP Socket 连通性校验 (Native Rust SSH Tester)**
-  - 调用 Rust 底层发起 5s 原生 Socket 握手与 `SSH-2.0-OpenSSH` 真实 Header 识别，严格拦截伪造 IP/无效凭据。
-- 💾 **100% 本地数据持久化 (Persistent Storage)**
-  - 所有主机配置、自定义分组列表、AI API Key 密钥及界面偏好全部加密持久化存于本地。
+  - 顶栏一键切换中英文界面文案。
 
 ---
 
-## 📦 客户端下载
+## 📦 客户端下载 (v0.0.3 Releases)
 
-您可以直接从 `releases` 目录获取已编译的 Windows 独立客户端：
+您可以在 [GitHub Releases](https://github.com/AuCf/ushell/releases/latest) 下载适用于您系统的安装包：
 
-| 文件名 | 类型 | 说明 |
-| :--- | :--- | :--- |
-| **`ushell.exe`** | 绿色免安装版 | 直接双击即可运行 |
-| **`uShell_0.0.1_x64-setup.exe`** | NSIS 安装包 | 标准 Windows 安装向导 |
-| **`uShell_0.0.1_x64_en-US.msi`** | MSI 安装包 | 企业级 MSI 部署包 |
+| 操作系统 | 芯片架构 | 安装包类型 | 文件格式 |
+| :--- | :--- | :--- | :--- |
+| **Windows** | x86_64 / x64 | Windows 安装包 / MSI | `.exe` / `.msi` |
+| **macOS** | Apple Silicon (M1/M2/M3/M4) | Apple 芯片原生 DMG | `.dmg` (aarch64) |
+| **macOS** | Intel | Intel 芯片原生 DMG | `.dmg` (x86_64) |
 
 ---
 
@@ -81,12 +86,10 @@ npm run tauri:dev
 ### 生产打包 (Production Build)
 
 ```bash
-# 编译 Vite 前端并构建 Tauri 原生可执行程序
+# 编译 Vite 前端并构建 Tauri 原生桌面应用
 npm run build
 npx tauri build
 ```
-
-打包生成的 `.exe` 与安装包将放置于 `src-tauri/target/release/` 目录。
 
 ---
 
