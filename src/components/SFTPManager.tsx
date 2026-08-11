@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { SFTPItem, ServerProfile } from '../types';
 import { NewFolderModal } from './NewFolderModal';
+import { ConfirmModal } from './ConfirmModal';
 import { Language, i18n } from '../i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
@@ -54,6 +55,13 @@ interface DroppedDirectoryEntry extends DroppedEntry {
   createReader: () => DroppedDirectoryReader;
 }
 
+interface ConfirmDialogState {
+  title?: string;
+  message: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
 const droppedRelativePath = (entry: DroppedEntry) => entry.fullPath.replace(/^\/+/, '') || entry.name;
 
 const readDroppedFile = (entry: DroppedFileEntry) => new Promise<File>((resolve, reject) => {
@@ -95,6 +103,7 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [isNewFolderModalOpen, setIsNewFolderModalOpen] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [transfer, setTransfer] = useState<{
     kind: 'upload' | 'download';
     fileName: string;
@@ -110,6 +119,23 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
 
   const isLight = theme === 'light';
   const t = i18n[lang];
+
+  const askConfirmation = (message: string, title?: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      setConfirmDialog({
+        title,
+        message,
+        onConfirm: () => {
+          setConfirmDialog(null);
+          resolve(true);
+        },
+        onCancel: () => {
+          setConfirmDialog(null);
+          resolve(false);
+        }
+      });
+    });
+  };
 
   const connectionArgs = () => ({
     host: server.host,
@@ -227,10 +253,11 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
           const message = typeof err === 'string' ? err : (err?.message || String(err));
           if (!message.startsWith('SFTP_FILE_EXISTS:')) throw err;
 
-          const shouldOverwrite = window.confirm(
+          const shouldOverwrite = await askConfirmation(
             lang === 'zh'
               ? `远程目录中已存在 ${relativePath}，是否覆盖？`
-              : `${relativePath} already exists remotely. Overwrite it?`
+              : `${relativePath} already exists remotely. Overwrite it?`,
+            lang === 'zh' ? '覆盖文件确认' : 'Confirm File Overwrite'
           );
           if (!shouldOverwrite) continue;
           await uploadFile(relativePath, content, true);
@@ -266,10 +293,11 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
         const message = typeof err === 'string' ? err : (err?.message || String(err));
         if (!message.startsWith('SFTP_FILES_EXIST:')) throw err;
         const conflictNames = message.slice('SFTP_FILES_EXIST:'.length);
-        const shouldOverwrite = window.confirm(
+        const shouldOverwrite = await askConfirmation(
           lang === 'zh'
             ? `下列远程文件已经存在：\n${conflictNames}\n\n是否全部覆盖？`
-            : `These remote files already exist:\n${conflictNames}\n\nOverwrite all of them?`
+            : `These remote files already exist:\n${conflictNames}\n\nOverwrite all of them?`,
+          lang === 'zh' ? '批量覆盖确认' : 'Confirm Batch Overwrite'
         );
         if (!shouldOverwrite) return;
         await invokeUpload(true);
@@ -483,7 +511,7 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
             {transfer.kind === 'upload'
               ? (lang === 'zh'
                 ? `正在上传 ${transfer.fileName}${transfer.total ? `（${transfer.completed}/${transfer.total}）` : ''}`
-                : `Uploading ${transfer.fileName}${transfer.total ? ` (${transfer.completed}/${transfer.total})` : ''}`)
+                : `Uploading ${transfer.fileName}${transfer.total ? ` (${transfer.completed}/${transfer.total}）` : ''}`)
               : (lang === 'zh' ? `正在下载 ${transfer.fileName}` : `Downloading ${transfer.fileName}`)}
           </span>
         </div>
@@ -579,6 +607,19 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
         onClose={() => setIsNewFolderModalOpen(false)}
         onCreate={handleCreateFolderSubmit}
       />
+
+      {confirmDialog && (
+        <ConfirmModal
+          isOpen={true}
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          theme={theme}
+          lang={lang}
+          isDanger={true}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={confirmDialog.onCancel}
+        />
+      )}
     </div>
   );
 };
