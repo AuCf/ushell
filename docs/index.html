@@ -157,23 +157,32 @@
         专为开发者与运维工程师打造。采用 Tauri v2 + React 现代化架构，零臃肿内存占用，集成 PTY 交互终端、可视化 SFTP 双向拖拽与 AI 智能排障。
       </p>
 
-      <!-- Hero Call-to-Actions -->
-      <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-14">
-        <a 
-          href="#download" 
-          class="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm transition-all shadow-xl shadow-emerald-950/50 hover:scale-[1.02] flex items-center justify-center gap-2.5"
-        >
-          <i data-lucide="download" class="w-4 h-4"></i>
-          <span>下载 macOS / Windows 安装包</span>
-        </a>
-        <a 
-          href="https://github.com/AuCf/ushell" 
-          target="_blank" 
-          class="w-full sm:w-auto px-7 py-3.5 rounded-xl border border-zinc-700 bg-zinc-900/60 hover:bg-zinc-800/80 text-zinc-200 font-semibold text-sm transition-all flex items-center justify-center gap-2"
-        >
-          <i data-lucide="star" class="w-4 h-4 text-amber-400"></i>
-          <span>在 GitHub 关注开源仓库</span>
-        </a>
+      <!-- Hero Call-to-Actions (Smart OS Detection) -->
+      <div class="flex flex-col items-center justify-center gap-3 mb-14">
+        <div class="flex flex-col sm:flex-row items-center justify-center gap-4 w-full">
+          <a 
+            id="hero-download-btn"
+            href="https://github.com/AuCf/ushell/releases/latest" 
+            target="_blank"
+            class="w-full sm:w-auto px-8 py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm transition-all shadow-xl shadow-emerald-950/50 hover:scale-[1.02] flex items-center justify-center gap-2.5"
+          >
+            <i id="hero-download-icon" data-lucide="download" class="w-4 h-4"></i>
+            <span id="hero-download-text">下载最新版本安装包 (v0.0.3)</span>
+          </a>
+          <a 
+            href="https://github.com/AuCf/ushell" 
+            target="_blank" 
+            class="w-full sm:w-auto px-7 py-3.5 rounded-xl border border-zinc-700 bg-zinc-900/60 hover:bg-zinc-800/80 text-zinc-200 font-semibold text-sm transition-all flex items-center justify-center gap-2"
+          >
+            <i data-lucide="star" class="w-4 h-4 text-amber-400"></i>
+            <span>在 GitHub 关注开源仓库</span>
+          </a>
+        </div>
+        
+        <!-- Detected OS Sub-Badge -->
+        <div id="hero-os-badge" class="text-[11px] font-mono text-zinc-500 flex items-center gap-1.5 pt-1">
+          <span>支持 Windows 10/11 & macOS 全平台架构</span>
+        </div>
       </div>
 
       <!-- Hero App Preview Mockup -->
@@ -436,8 +445,47 @@
     </div>
   </footer>
 
-  <!-- Initialize Lucide Icons -->
+  <!-- Smart User OS Auto-Detection Script -->
   <script>
+    function detectUserOS() {
+      const ua = navigator.userAgent || '';
+      const platform = navigator.platform || '';
+
+      const btn = document.getElementById('hero-download-btn');
+      const text = document.getElementById('hero-download-text');
+      const icon = document.getElementById('hero-download-icon');
+      const badge = document.getElementById('hero-os-badge');
+
+      if (!btn || !text || !icon) return;
+
+      if (/Win/i.test(platform) || /Windows/i.test(ua)) {
+        text.innerText = '下载 Windows 64位安装包 (.exe / .msi)';
+        icon.setAttribute('data-lucide', 'monitor');
+        btn.href = 'https://github.com/AuCf/ushell/releases/latest';
+        if (badge) badge.innerHTML = '<i data-lucide="check-circle2" class="w-3.5 h-3.5 text-emerald-400"></i> 已智能匹配您的系统：适用于 Windows 10 / 11 64位架构';
+      } else if (/Mac/i.test(platform) || /Macintosh/i.test(ua)) {
+        const isArm = /arm/i.test(ua) || (navigator.maxTouchPoints && navigator.maxTouchPoints > 2);
+        if (isArm) {
+          text.innerText = '下载 macOS Apple 芯片安装包 (.dmg)';
+          icon.setAttribute('data-lucide', 'apple');
+          btn.href = 'https://github.com/AuCf/ushell/releases/latest';
+          if (badge) badge.innerHTML = '<i data-lucide="check-circle2" class="w-3.5 h-3.5 text-emerald-400"></i> 已智能匹配您的系统：适用于 Apple Silicon (M1/M2/M3/M4) 芯片';
+        } else {
+          text.innerText = '下载 macOS Intel 芯片安装包 (.dmg)';
+          icon.setAttribute('data-lucide', 'cpu');
+          btn.href = 'https://github.com/AuCf/ushell/releases/latest';
+          if (badge) badge.innerHTML = '<i data-lucide="check-circle2" class="w-3.5 h-3.5 text-emerald-400"></i> 已智能匹配您的系统：适用于 macOS Intel 64位架构';
+        }
+      } else {
+        text.innerText = '下载适用您系统的安装包 (v0.0.3)';
+        btn.href = '#download';
+        if (badge) badge.innerHTML = '支持 Windows 与 macOS 双平台全部架构';
+      }
+
+      lucide.createIcons();
+    }
+
+    document.addEventListener('DOMContentLoaded', detectUserOS);
     lucide.createIcons();
   </script>
 </body>
