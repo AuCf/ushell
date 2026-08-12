@@ -5,8 +5,10 @@
   <p>专为开发者与运维工程师打造的极简、无边框、支持 AI 智能辅助的跨平台现代桌面客户端。</p>
 
   <p>
-    <a href="docs/index.html"><img src="https://img.shields.io/badge/🌐_Official_Website-Docs-emerald.svg?style=for-the-badge" alt="Website"></a>
-    <a href="https://github.com/AuCf/ushell/releases/latest"><img src="https://img.shields.io/badge/Release-v0.0.3-blue.svg?style=for-the-badge" alt="Release"></a>
+    <a href="https://aucf.github.io/ushell/"><img src="https://img.shields.io/badge/🌐_Official_Website-Docs-emerald.svg?style=for-the-badge" alt="Website"></a>
+    <a href="https://github.com/AuCf/ushell/stargazers"><img src="https://img.shields.io/github/stars/AuCf/ushell?style=for-the-badge&logo=github&color=amber" alt="Stars"></a>
+    <a href="https://github.com/AuCf/ushell/releases"><img src="https://img.shields.io/github/downloads/AuCf/ushell/total?style=for-the-badge&logo=github&color=blue" alt="Downloads"></a>
+    <a href="https://github.com/AuCf/ushell/releases/latest"><img src="https://img.shields.io/badge/Release-v0.0.6-emerald.svg?style=for-the-badge" alt="Release"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge" alt="License"></a>
   </p>
 
@@ -20,6 +22,18 @@
 
 ---
 
+## 📸 界面预览 (Screenshots)
+
+<div align="center">
+  <p><b>VT100 PTY 交互终端与极速主机会话</b></p>
+  <img src="docs/preview01.png" alt="uShell Terminal Preview" width="850" style="border-radius: 12px; border: 1px solid #1a2b1e;">
+  <br/><br/>
+  <p><b>双向 SFTP 文件管理器 & AI 排错 Copilot</b></p>
+  <img src="docs/preview02.png" alt="uShell SFTP & Copilot Preview" width="850" style="border-radius: 12px; border: 1px solid #1a2b1e;">
+</div>
+
+---
+
 ## 🌟 为什么选择 uShell？
 
 大多数传统 SSH 客户端界面繁复或风格过时。**uShell** 采用类似 **Ghostty / Neovim** 的超极简暗黑极客风格设计，剥离了一切臃肿装饰，结合 **Tauri v2 (Rust)** 带来轻量高效的桌面终端体验。
@@ -28,6 +42,7 @@
 - 🎨 **极客暗黑终端绿**：极简平滑界面与防疲劳经典绿配色。
 - 🤖 **AI Copilot**：报错智能抓取排障与指令一键插入。
 - 🔄 **无缝迁移**：一键导入外部 JSON 节点配置与纯文本 IP 列表。
+- 🚀 **自动热更新**：内置 GitHub Auto-Updater，新版本推送时左上角自动闪烁小黄点。
 
 ---
 
@@ -38,9 +53,9 @@
 - 🖥️ **VT100 PTY 终端内核 (xterm.js PTY Stream)**
   - 真正基于 Rust `ssh2` + Webview Channel 的双向 PTY 数据流通道。支持 ANSI 全彩高亮、Tab 键智能补全、历史命令 (`↑`/`↓`) 导航与上下文右键操作。
 - 📁 **双向 SFTP 文件管理器 (Ranger Style)**
-  - 支持本地文件/文件夹拖拽上传、双向穿梭传输、在线新建目录与下载。
+  - 支持本地文件/文件夹拖拽上传、双向穿梭传输、隐藏文件/点文件 (`.dotfiles`) 开关切换、在线新建目录与下载。
 - 🤖 **AI 命令行助手与智能排错 (AI Copilot & Error Diagnoser)**
-  - 集成 DeepSeek / OpenAI / Claude / 本地 Ollama 模型。一键抓取终端报错上下文，提供修改方案并支持一键填入终端 (RUN IN TERM)。
+  - 集成 DeepSeek / OpenAI / Claude / 本地 Ollama 模型。支持左右对比对话气泡、清空历史会话、报错自动精准捕获与指令一键填入终端 (RUN IN TERM)。
 - 🔄 **第三方终端配置一键导入 (External Config Importer)**
   - 无缝解析通用 JSON 配置文件或纯文本 IP 节点列表 (`root@192.168.1.1:22`)。
 - 🎨 **黑白极客双主题 (Dark / Light Theme)**
@@ -50,7 +65,7 @@
 
 ---
 
-## 📦 客户端下载 (v0.0.3 Releases)
+## 📦 客户端下载 (v0.0.6 Releases)
 
 您可以在 [GitHub Releases](https://github.com/AuCf/ushell/releases/latest) 下载适用于您系统的安装包：
 
@@ -83,12 +98,11 @@ npm install
 npm run tauri:dev
 ```
 
-### 生产打包 (Production Build)
+### 一键流水线发布 (One-Command Release)
 
 ```bash
-# 编译 Vite 前端并构建 Tauri 原生桌面应用
-npm run build
-npx tauri build
+# 自动递增版本号、同步所有配置、Git Commit & Tag 并一键 Push 触发 GitHub Actions 云打包
+npm run release
 ```
 
 ---
