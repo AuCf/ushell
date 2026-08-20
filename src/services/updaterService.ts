@@ -1,4 +1,5 @@
 import packageJson from '../../package.json';
+import { invoke } from '@tauri-apps/api/core';
 
 export interface ReleaseInfo {
   version: string;
@@ -44,8 +45,18 @@ export async function checkGitHubUpdate(): Promise<{ hasUpdate: boolean; release
 
     const hasUpdate = isNewerVersion(CURRENT_VERSION, cleanTag);
 
-    const windowsAsset = data.assets?.find((a: any) => a.name.endsWith('.exe') || a.name.endsWith('.msi'));
-    const downloadUrl = windowsAsset?.browser_download_url || data.html_url;
+    const runtime = await invoke<{ os: string; arch: string }>('get_runtime_platform');
+    const assets: Array<{ name: string; browser_download_url: string }> = data.assets || [];
+    const downloadAsset = assets.find(asset => {
+      const name = asset.name.toLowerCase();
+      if (runtime.os === 'windows') return name.endsWith('-setup.exe') || name.endsWith('.msi');
+      if (runtime.os === 'macos') {
+        const expectedArch = runtime.arch === 'aarch64' ? 'aarch64' : 'x64';
+        return name.endsWith('.dmg') && name.includes(expectedArch);
+      }
+      return false;
+    });
+    const downloadUrl = downloadAsset?.browser_download_url || data.html_url;
 
     return {
       hasUpdate,

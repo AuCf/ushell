@@ -9,7 +9,8 @@ import {
   Edit2, 
   ChevronRight, 
   ChevronDown,
-  Key
+  Key,
+  ShieldCheck
 } from 'lucide-react';
 
 import packageJson from '../../package.json';
@@ -26,6 +27,7 @@ interface SidebarProps {
   onImportFinalShell: () => void;
   onDeleteServer: (id: string) => void;
   onOpenAICopilot: () => void;
+  onOpenTrustedHosts: () => void;
   onOpenUpdateModal?: () => void;
 }
 
@@ -41,6 +43,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onImportFinalShell,
   onDeleteServer,
   onOpenAICopilot,
+  onOpenTrustedHosts,
   onOpenUpdateModal
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
@@ -95,6 +98,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
             )}
           </button>
         </div>
+
+        <button
+          onClick={onOpenTrustedHosts}
+          className={`p-1 rounded shrink-0 ${isLight ? 'hover:bg-slate-200 text-slate-500' : 'hover:bg-[#222228] text-zinc-500 hover:text-zinc-300'}`}
+          title={lang === 'zh' ? '已信任主机' : 'Trusted hosts'}
+        >
+          <ShieldCheck className="w-3.5 h-3.5" />
+        </button>
 
         <button
           onClick={onOpenAICopilot}

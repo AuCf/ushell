@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AIConfig } from '../types';
-import { getStoredAIConfig, saveStoredAIConfig } from '../services/aiService';
+import { loadStoredAIConfig, saveStoredAIConfig } from '../services/aiService';
 import { Language, i18n } from '../i18n';
 import { X, Settings, Key, Globe, Cpu, Check } from 'lucide-react';
 
@@ -24,11 +24,12 @@ export const AIConfigModal: React.FC<AIConfigModalProps> = ({ isOpen, theme = 'd
 
   useEffect(() => {
     if (isOpen) {
-      const cfg = getStoredAIConfig();
-      setProvider(cfg.provider);
-      setApiKey(cfg.apiKey);
-      setBaseUrl(cfg.baseUrl);
-      setModel(cfg.model);
+      void loadStoredAIConfig().then(cfg => {
+        setProvider(cfg.provider);
+        setApiKey(cfg.apiKey);
+        setBaseUrl(cfg.baseUrl);
+        setModel(cfg.model);
+      });
     }
   }, [isOpen]);
 
@@ -51,10 +52,10 @@ export const AIConfigModal: React.FC<AIConfigModalProps> = ({ isOpen, theme = 'd
     }
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     const config: AIConfig = { provider, apiKey, baseUrl, model };
-    saveStoredAIConfig(config);
+    await saveStoredAIConfig(config);
     onSaved(config);
     setSavedSuccess(true);
     setTimeout(() => {

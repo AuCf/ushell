@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { ReleaseInfo, CURRENT_VERSION } from '../services/updaterService';
 import { Language } from '../i18n';
-import { X, Sparkles, Download, ExternalLink, CheckCircle2, ArrowRight, FolderDown } from 'lucide-react';
+import { X, Sparkles, Download, ExternalLink, ArrowRight } from 'lucide-react';
 
 interface UpdateModalProps {
   isOpen: boolean;
@@ -18,10 +18,6 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
   releaseInfo,
   onClose
 }) => {
-  const [isUpdating, setIsUpdating] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [updateComplete, setUpdateComplete] = useState(false);
-
   const isLight = theme === 'light';
 
   if (!isOpen || !releaseInfo) return null;
@@ -38,29 +34,6 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-  };
-
-  const handleStartHotUpdate = () => {
-    if (updateComplete) {
-      triggerDownload();
-      return;
-    }
-
-    setIsUpdating(true);
-    setProgress(10);
-
-    const interval = setInterval(() => {
-      setProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setUpdateComplete(true);
-          // Automatically trigger download
-          triggerDownload();
-          return 100;
-        }
-        return prev + Math.floor(Math.random() * 20) + 10;
-      });
-    }, 150);
   };
 
   return (
@@ -108,36 +81,6 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             </div>
           </div>
 
-          {/* Download Progress Bar */}
-          {isUpdating && (
-            <div className="space-y-2 pt-1">
-              <div className="flex items-center justify-between text-[11px] font-mono font-bold">
-                <span className="text-amber-400 flex items-center gap-1.5">
-                  {!updateComplete ? (
-                    <>
-                      <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
-                      {lang === 'zh' ? '正在获取并下载最新热更新包...' : 'Fetching hot update package...'}
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                      <span className="text-emerald-400">{lang === 'zh' ? '安装包下载链接已拉起！点击下方按钮直接下载覆盖升级' : 'Update package ready for install!'}</span>
-                    </>
-                  )}
-                </span>
-                <span className={updateComplete ? 'text-emerald-400' : 'text-amber-400'}>{progress}%</span>
-              </div>
-
-              {/* Progress Track */}
-              <div className="w-full h-2 rounded-full bg-zinc-800 overflow-hidden">
-                <div 
-                  className={`h-full transition-all duration-150 ${updateComplete ? 'bg-emerald-500' : 'bg-amber-400'}`}
-                  style={{ width: `${progress}%` }}
-                ></div>
-              </div>
-            </div>
-          )}
-
           {/* Action Buttons */}
           <div className="flex gap-2 pt-2">
             <button
@@ -162,15 +105,11 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             </a>
 
             <button
-              onClick={handleStartHotUpdate}
-              className={`flex-1 py-2 rounded font-extrabold text-xs tracking-wider transition-all flex items-center justify-center gap-1.5 shadow-lg ${
-                updateComplete 
-                  ? 'bg-emerald-500 hover:bg-emerald-400 text-black shadow-emerald-950/40' 
-                  : 'bg-amber-500 hover:bg-amber-400 text-black shadow-amber-950/40'
-              }`}
+              onClick={() => triggerDownload()}
+              className="flex-1 py-2 rounded font-extrabold text-xs tracking-wider transition-all flex items-center justify-center gap-1.5 shadow-lg bg-amber-500 hover:bg-amber-400 text-black shadow-amber-950/40"
             >
-              {updateComplete ? <FolderDown className="w-3.5 h-3.5" /> : <Download className="w-3.5 h-3.5" />}
-              <span>{updateComplete ? (lang === 'zh' ? '点击直接下载安装包' : 'DOWNLOAD PACKAGE') : (lang === 'zh' ? '一键热更新升级' : 'HOT UPDATE NOW')}</span>
+              <Download className="w-3.5 h-3.5" />
+              <span>{lang === 'zh' ? '下载当前平台安装包' : 'DOWNLOAD INSTALLER'}</span>
             </button>
           </div>
 

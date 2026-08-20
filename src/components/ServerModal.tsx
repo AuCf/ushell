@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ServerProfile } from '../types';
 import { Language, i18n } from '../i18n';
-import { invoke } from '@tauri-apps/api/core';
 import { X, Server, Key, Lock, ChevronDown, Check, Wifi, AlertCircle, Loader2 } from 'lucide-react';
+import { ConfirmHostKey, invokeWithHostTrust } from '../services/sshTrustService';
 
 interface ServerModalProps {
   isOpen: boolean;
@@ -11,7 +11,8 @@ interface ServerModalProps {
   theme?: 'dark' | 'light';
   lang?: Language;
   onClose: () => void;
-  onSave: (profile: Omit<ServerProfile, 'id' | 'createdAt'> & { id?: string }) => void;
+  onSave: (profile: Omit<ServerProfile, 'id' | 'createdAt'> & { id?: string }) => Promise<void>;
+  onConfirmHostKey: ConfirmHostKey;
 }
 
 export const ServerModal: React.FC<ServerModalProps> = ({
@@ -21,7 +22,8 @@ export const ServerModal: React.FC<ServerModalProps> = ({
   theme = 'dark',
   lang = 'zh',
   onClose,
-  onSave
+  onSave,
+  onConfirmHostKey
 }) => {
   const [name, setName] = useState('');
   const [host, setHost] = useState('');
@@ -37,6 +39,7 @@ export const ServerModal: React.FC<ServerModalProps> = ({
   const [testLatency, setTestLatency] = useState<number>(0);
   const [sshBanner, setSshBanner] = useState<string>('');
   const [testError, setTestError] = useState<string>('');
+  const [isSaving, setIsSaving] = useState(false);
 
   const groupDropdownRef = useRef<HTMLDivElement>(null);
   const isLight = theme === 'light';
@@ -118,14 +121,14 @@ export const ServerModal: React.FC<ServerModalProps> = ({
 
     try {
       // Call Native Rust SSH TCP Socket & Banner Tester
-      const res = await invoke<{ success: boolean; latency_ms: number; banner: string; message: string }>('test_ssh_connection', {
+      const res = await invokeWithHostTrust<{ success: boolean; latency_ms: number; banner: string; message: string }>('test_ssh_connection', {
         host: cleanHost,
         port: Number(port),
         username: cleanUser,
         password: authType === 'password' ? password : null,
         privateKey: authType === 'privateKey' ? privateKey : null,
         authType
-      });
+      }, lang, onConfirmHostKey);
 
       setTestLatency(res.latency_ms);
       setSshBanner(res.banner);
@@ -137,24 +140,32 @@ export const ServerModal: React.FC<ServerModalProps> = ({
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name || !host) return;
 
-    onSave({
-      id: editingServer?.id,
-      name,
-      host,
-      port,
-      username,
-      authType,
-      password,
-      privateKey,
-      group: group.trim() || (lang === 'zh' ? '默认分组' : 'DEFAULT'),
-      tags: editingServer?.tags || ['Manual']
-    });
-
-    onClose();
+    setIsSaving(true);
+    setTestError('');
+    try {
+      await onSave({
+        id: editingServer?.id,
+        name,
+        host,
+        port,
+        username,
+        authType,
+        password,
+        privateKey,
+        group: group.trim() || (lang === 'zh' ? '默认分组' : 'DEFAULT'),
+        tags: editingServer?.tags || ['Manual']
+      });
+      onClose();
+    } catch (error) {
+      setTestStatus('failed');
+      setTestError(typeof error === 'string' ? error : String(error));
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const filteredGroups = existingGroups.filter(g => 
@@ -406,11 +417,12 @@ export const ServerModal: React.FC<ServerModalProps> = ({
             </button>
             <button
               type="submit"
+              disabled={isSaving}
               className={`flex-1 py-1.5 border font-bold text-xs rounded transition-colors ${
                 isLight ? 'bg-slate-900 border-slate-900 text-white hover:bg-slate-800' : 'bg-[#27272a] hover:bg-[#3f3f46] text-white border-zinc-600'
               }`}
             >
-              {t.save}
+              {isSaving ? (lang === 'zh' ? '保存中...' : 'Saving...') : t.save}
             </button>
           </div>
         </form>

@@ -1,4 +1,5 @@
 import { AIConfig } from '../types';
+import { invoke } from '@tauri-apps/api/core';
 
 export const DEFAULT_AI_CONFIG: AIConfig = {
   provider: 'deepseek',
@@ -10,13 +11,30 @@ export const DEFAULT_AI_CONFIG: AIConfig = {
 export function getStoredAIConfig(): AIConfig {
   try {
     const raw = localStorage.getItem('ushell_ai_config');
-    if (raw) return JSON.parse(raw);
+    if (raw) return { ...JSON.parse(raw), apiKey: '' };
   } catch (e) {}
   return DEFAULT_AI_CONFIG;
 }
 
-export function saveStoredAIConfig(config: AIConfig) {
-  localStorage.setItem('ushell_ai_config', JSON.stringify(config));
+export async function loadStoredAIConfig(): Promise<AIConfig> {
+  const raw = localStorage.getItem('ushell_ai_config');
+  let legacyConfig = DEFAULT_AI_CONFIG;
+  try {
+    if (raw) legacyConfig = { ...DEFAULT_AI_CONFIG, ...JSON.parse(raw) };
+  } catch (error) {}
+
+  if (legacyConfig.apiKey) {
+    await invoke('save_ai_api_key', { apiKey: legacyConfig.apiKey });
+  }
+  const apiKey = await invoke<string | null>('load_ai_api_key') || '';
+  const config = { ...legacyConfig, apiKey };
+  localStorage.setItem('ushell_ai_config', JSON.stringify({ ...config, apiKey: '' }));
+  return config;
+}
+
+export async function saveStoredAIConfig(config: AIConfig): Promise<void> {
+  await invoke('save_ai_api_key', { apiKey: config.apiKey });
+  localStorage.setItem('ushell_ai_config', JSON.stringify({ ...config, apiKey: '' }));
 }
 
 /**
@@ -29,7 +47,7 @@ export async function queryAICopilot(
   contextError?: string,
   customConfig?: AIConfig
 ): Promise<{ answer: string; suggestedCommand?: string }> {
-  const config = customConfig || getStoredAIConfig();
+  const config = customConfig || await loadStoredAIConfig();
 
   // If user configured an API key or local Ollama URL, send real HTTP request to LLM!
   if (config.apiKey || config.provider === 'ollama' || config.baseUrl.includes('localhost')) {

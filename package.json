@@ -1,18 +1,20 @@
 {
   "name": "ushell",
   "private": true,
-  "version": "0.0.6",
+  "version": "0.0.7",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "build": "tsc && vite build",
+    "test": "vitest run",
     "preview": "vite preview",
     "release": "node scripts/bump.js"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.0.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "clsx": "^2.1.0",
@@ -31,6 +33,7 @@
     "postcss": "^8.4.35",
     "tailwindcss": "^3.4.1",
     "typescript": "^5.2.2",
-    "vite": "^5.1.6"
+    "vite": "^6.4.3",
+    "vitest": "^3.2.6"
   }
 }

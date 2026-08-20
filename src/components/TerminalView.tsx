@@ -4,7 +4,10 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { ServerProfile } from '../types';
 import { Language, i18n } from '../i18n';
-import { Sparkles, Copy, Trash2, Check, Clipboard } from 'lucide-react';
+import { Sparkles, Copy, Trash2, Check, Clipboard, History } from 'lucide-react';
+import { MAX_RECONNECT_ATTEMPTS, reconnectDelay } from '../services/terminalReconnect';
+import { addCommandHistory, shouldRecordCommand } from '../services/commandHistory';
+import { CommandLibraryPanel } from './CommandLibraryPanel';
 
 interface TerminalViewProps {
   server: ServerProfile;
@@ -22,9 +25,6 @@ type TerminalEvent =
   | { type: 'output'; data: number[] }
   | { type: 'error'; message: string }
   | { type: 'closed'; exitStatus: number | null };
-
-const MAX_RECONNECT_ATTEMPTS = 3;
-const RECONNECT_DELAY_MS = 3000;
 
 const terminalTheme = (isLight: boolean): ITheme => isLight
   ? {
@@ -78,9 +78,12 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
   const pendingCommandRef = useRef(pendingCommand);
   const visibleRef = useRef(visible);
   const inputChainRef = useRef<Promise<void>>(Promise.resolve());
+  const commandBufferRef = useRef('');
 
   const [copied, setCopied] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [isCommandLibraryOpen, setIsCommandLibraryOpen] = useState(false);
+  const [commandHistoryRevision, setCommandHistoryRevision] = useState(0);
 
   const isLight = theme === 'light';
   const t = i18n[lang];
@@ -163,7 +166,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
       }
 
       reconnectAttempts += 1;
-      const delay = RECONNECT_DELAY_MS * reconnectAttempts;
+      const delay = reconnectDelay(reconnectAttempts);
       term.writeln(
         `\r\n\x1b[33m[SSH connection lost. Reconnecting in ${delay / 1000}s (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...]\x1b[0m`
       );
@@ -256,7 +259,33 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
     void openTerminal();
 
     const dataDisposable = term.onData((data) => {
-      if (!sendTerminalData(data)) term.write('\x07');
+      const completedCommands: string[] = [];
+      if (data.startsWith('\x1b')) commandBufferRef.current = '';
+      for (const character of data.startsWith('\x1b') ? '' : data) {
+        if (character === '\r' || character === '\n') {
+          const command = commandBufferRef.current.trim();
+          if (command) completedCommands.push(command);
+          commandBufferRef.current = '';
+        } else if (character === '\x7f' || character === '\x08') {
+          commandBufferRef.current = commandBufferRef.current.slice(0, -1);
+        } else if (character === '\x03' || character === '\x15') {
+          commandBufferRef.current = '';
+        } else if (character >= ' ' && character !== '\x1b') {
+          commandBufferRef.current += character;
+        }
+      }
+      if (!sendTerminalData(data)) {
+        term.write('\x07');
+        return;
+      }
+      let historyChanged = false;
+      for (const command of completedCommands) {
+        if (shouldRecordCommand(command, recentOutput.current)) {
+          addCommandHistory({ command, serverId: server.id, host: server.host });
+          historyChanged = true;
+        }
+      }
+      if (historyChanged) setCommandHistoryRevision(value => value + 1);
     });
     const resizeDisposable = term.onResize(({ cols, rows }) => {
       const sessionId = sessionIdRef.current;
@@ -366,6 +395,18 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
 
         <div className="flex items-center gap-1.5">
           <button
+            onClick={() => setIsCommandLibraryOpen(value => !value)}
+            className={`flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] ${
+              isCommandLibraryOpen
+                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500'
+                : (isLight ? 'border-slate-300 hover:bg-slate-200' : 'border-[#2a2d36] hover:bg-[#22252e]')
+            }`}
+            title={lang === 'zh' ? '历史记录和常用命令' : 'History and favorite commands'}
+          >
+            <History className="h-3 w-3" /> {lang === 'zh' ? '命令' : 'Commands'}
+          </button>
+
+          <button
             onClick={() => onAskAIWithContext(lastErrorOutput.current || undefined)}
             className={`flex items-center gap-1 px-2 py-0.5 border rounded text-[10px] ${
               isLight ? 'bg-purple-50 border-purple-300 text-purple-700 hover:bg-purple-100' : 'bg-[#1f1d2b] hover:bg-[#2b273d] border-purple-500/30 text-purple-300'
@@ -397,7 +438,27 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
         </div>
       </div>
 
-      <div className="flex-1 p-2 overflow-hidden" ref={terminalRef} />
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div className="min-w-0 flex-1 p-2 overflow-hidden" ref={terminalRef} />
+        {isCommandLibraryOpen && (
+          <CommandLibraryPanel
+            serverId={server.id}
+            theme={theme}
+            lang={lang}
+            revision={commandHistoryRevision}
+            onRun={(command) => {
+              const plainCommand = command.replace(/[\r\n]+$/, '');
+              const sent = sendTerminalData(command);
+              if (sent && shouldRecordCommand(plainCommand, recentOutput.current)) {
+                addCommandHistory({ command: plainCommand, serverId: server.id, host: server.host });
+                setCommandHistoryRevision(value => value + 1);
+              }
+              xtermRef.current?.focus();
+            }}
+            onClose={() => setIsCommandLibraryOpen(false)}
+          />
+        )}
+      </div>
 
       {contextMenu && (
         <div

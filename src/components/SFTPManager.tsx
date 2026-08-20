@@ -3,12 +3,17 @@ import { SFTPItem, ServerProfile } from '../types';
 import { NewFolderModal } from './NewFolderModal';
 import { ConfirmModal } from './ConfirmModal';
 import { Language, i18n } from '../i18n';
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { Download, Eye, EyeOff, Loader2, RefreshCw, Trash2 } from 'lucide-react';
+import { Download, Eye, EyeOff, FolderUp, Loader2, RefreshCw, Trash2, X } from 'lucide-react';
+import { filterSftpItems } from '../services/sftpView';
 
-const MAX_TRANSFER_BYTES = 64 * 1024 * 1024;
+const formatTransferSize = (bytes: number) => bytes >= 1024 * 1024
+  ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  : `${Math.max(0, bytes / 1024).toFixed(1)} KB`;
+const isTransferCancelled = (reason: unknown) => String(reason).includes('SFTP_TRANSFER_CANCELLED');
 
 interface SFTPManagerProps {
   server: ServerProfile;
@@ -21,38 +26,15 @@ interface SftpDirectoryResult {
   items: SFTPItem[];
 }
 
-interface SftpDownloadResult {
-  name: string;
-  content: number[];
-}
-
 interface SftpUploadBatchResult {
   uploaded: number;
   directories: number;
 }
 
-interface UploadEntry {
-  file: File;
-  relativePath: string;
-}
-
-interface DroppedEntry {
-  isFile: boolean;
-  isDirectory: boolean;
-  name: string;
-  fullPath: string;
-}
-
-interface DroppedFileEntry extends DroppedEntry {
-  file: (success: (file: File) => void, error: (reason: unknown) => void) => void;
-}
-
-interface DroppedDirectoryReader {
-  readEntries: (success: (entries: DroppedEntry[]) => void, error: (reason: unknown) => void) => void;
-}
-
-interface DroppedDirectoryEntry extends DroppedEntry {
-  createReader: () => DroppedDirectoryReader;
+interface SftpTransferEvent {
+  transferred: number;
+  total: number;
+  fileName: string;
 }
 
 interface ConfirmDialogState {
@@ -64,39 +46,13 @@ interface ConfirmDialogState {
   onCancel: () => void;
 }
 
-const droppedRelativePath = (entry: DroppedEntry) => entry.fullPath.replace(/^\/+/, '') || entry.name;
-
-const readDroppedFile = (entry: DroppedFileEntry) => new Promise<File>((resolve, reject) => {
-  entry.file(resolve, reject);
-});
-
-const readAllDirectoryEntries = async (reader: DroppedDirectoryReader) => {
-  const entries: DroppedEntry[] = [];
-  while (true) {
-    const batch = await new Promise<DroppedEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
-    if (batch.length === 0) return entries;
-    entries.push(...batch);
-  }
-};
-
-const collectDroppedEntry = async (
-  entry: DroppedEntry,
-  files: UploadEntry[],
-  directories: string[]
-): Promise<void> => {
-  if (entry.isFile) {
-    files.push({
-      file: await readDroppedFile(entry as DroppedFileEntry),
-      relativePath: droppedRelativePath(entry)
-    });
-    return;
-  }
-  if (!entry.isDirectory) return;
-
-  directories.push(droppedRelativePath(entry));
-  const children = await readAllDirectoryEntries((entry as DroppedDirectoryEntry).createReader());
-  for (const child of children) await collectDroppedEntry(child, files, directories);
-};
+interface TransferState {
+  kind: 'upload' | 'download' | 'delete';
+  fileName: string;
+  completed?: number;
+  total?: number;
+  taskId?: string;
+}
 
 export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark', lang = 'zh' }) => {
   const [currentPath, setCurrentPath] = useState('.');
@@ -106,20 +62,41 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
   const [error, setError] = useState('');
   const [isNewFolderModalOpen, setIsNewFolderModalOpen] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
-  const [transfer, setTransfer] = useState<{
-    kind: 'upload' | 'download' | 'delete';
-    fileName: string;
-    completed?: number;
-    total?: number;
-  } | null>(null);
+  const [transfer, setTransfer] = useState<TransferState | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [showHiddenFiles, setShowHiddenFiles] = useState(false);
   const requestSequence = useRef(0);
   const sftpSessionIdRef = useRef<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const transferRef = useRef<TransferState | null>(null);
+  const confirmPendingRef = useRef(false);
+  const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const directoryCacheRef = useRef(new Map<string, SftpDirectoryResult>());
   const dragDepth = useRef(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const nativeUploadRef = useRef<(paths: string[]) => Promise<void>>(async () => undefined);
+
+  const replaceTransfer = (next: TransferState | null) => {
+    transferRef.current = next;
+    setTransfer(next);
+  };
+
+  const beginTransfer = (next: TransferState): boolean => {
+    if (transferRef.current) return false;
+    replaceTransfer(next);
+    return true;
+  };
+
+  const updateTransfer = (taskId: string, update: (current: TransferState) => TransferState) => {
+    const current = transferRef.current;
+    if (!current || current.taskId !== taskId) return;
+    replaceTransfer(update(current));
+  };
+
+  const finishTransfer = (taskId?: string) => {
+    const current = transferRef.current;
+    if (!current || (taskId && current.taskId !== taskId)) return;
+    replaceTransfer(null);
+  };
 
   const isLight = theme === 'light';
   const t = i18n[lang];
@@ -130,20 +107,23 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
     isDanger = false,
     confirmText?: string
   ): Promise<boolean> => {
+    if (confirmPendingRef.current) return Promise.resolve(false);
+    confirmPendingRef.current = true;
     return new Promise((resolve) => {
+      confirmResolverRef.current = resolve;
+      const settle = (confirmed: boolean) => {
+        confirmPendingRef.current = false;
+        confirmResolverRef.current = null;
+        setConfirmDialog(null);
+        resolve(confirmed);
+      };
       setConfirmDialog({
         title,
         message,
         confirmText,
         isDanger,
-        onConfirm: () => {
-          setConfirmDialog(null);
-          resolve(true);
-        },
-        onCancel: () => {
-          setConfirmDialog(null);
-          resolve(false);
-        }
+        onConfirm: () => settle(true),
+        onCancel: () => settle(false)
       });
     });
   };
@@ -163,10 +143,31 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
     return { sessionId };
   };
 
-  const loadDirectory = async (requestedPath: string, sessionId = sftpSessionIdRef.current) => {
+  const applyDirectory = (result: SftpDirectoryResult) => {
+    setCurrentPath(result.path);
+    setFiles(result.items.map(item => ({
+      ...item,
+      modifiedTime: /^\d+$/.test(item.modifiedTime)
+        ? new Date(Number(item.modifiedTime) * 1000).toLocaleString()
+        : (item.modifiedTime || '-')
+    })));
+    setSelectedItem(null);
+  };
+
+  const loadDirectory = async (
+    requestedPath: string,
+    sessionId = sftpSessionIdRef.current,
+    forceRefresh = false
+  ) => {
     const requestId = ++requestSequence.current;
-    setIsLoading(true);
     setError('');
+    const cached = !forceRefresh ? directoryCacheRef.current.get(requestedPath) : undefined;
+    if (cached) {
+      applyDirectory(cached);
+      setIsLoading(false);
+    } else {
+      setIsLoading(true);
+    }
     try {
       if (!sessionId) throw new Error(lang === 'zh' ? 'SFTP 会话尚未连接' : 'SFTP session is not connected');
       const result = await invoke<SftpDirectoryResult>('list_sftp_directory', {
@@ -175,14 +176,9 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
       });
       if (requestId !== requestSequence.current) return;
 
-      setCurrentPath(result.path);
-      setFiles(result.items.map(item => ({
-        ...item,
-        modifiedTime: /^\d+$/.test(item.modifiedTime)
-          ? new Date(Number(item.modifiedTime) * 1000).toLocaleString()
-          : (item.modifiedTime || '-')
-      })));
-      setSelectedItem(null);
+      directoryCacheRef.current.set(requestedPath, result);
+      directoryCacheRef.current.set(result.path, result);
+      applyDirectory(result);
     } catch (err: any) {
       if (requestId !== requestSequence.current) return;
       setError(typeof err === 'string' ? err : (err?.message || String(err)));
@@ -196,6 +192,7 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
     let ownedSessionId: string | null = null;
     requestSequence.current += 1;
     sftpSessionIdRef.current = null;
+    directoryCacheRef.current.clear();
     setCurrentPath('.');
     setFiles([]);
     setShowHiddenFiles(false);
@@ -223,6 +220,12 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
     return () => {
       cancelled = true;
       requestSequence.current += 1;
+      const activeTaskId = transferRef.current?.taskId;
+      if (activeTaskId) void invoke('cancel_sftp_transfer', { taskId: activeTaskId });
+      transferRef.current = null;
+      confirmPendingRef.current = false;
+      confirmResolverRef.current?.(false);
+      confirmResolverRef.current = null;
       if (sftpSessionIdRef.current === ownedSessionId) sftpSessionIdRef.current = null;
       if (ownedSessionId) void invoke('close_sftp_session', { sessionId: ownedSessionId });
     };
@@ -231,9 +234,7 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
   const parentPath = currentPath === '/'
     ? null
     : (currentPath.slice(0, currentPath.lastIndexOf('/')) || '/');
-  const filteredFiles = showHiddenFiles
-    ? files
-    : files.filter(file => !file.name.startsWith('.'));
+  const filteredFiles = filterSftpItems(files, showHiddenFiles);
   const visibleFiles: SFTPItem[] = parentPath
     ? [{
         name: '..',
@@ -246,6 +247,7 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
     : filteredFiles;
 
   const handleItemClick = (item: SFTPItem) => {
+    if (transferRef.current) return;
     setSelectedItem(item.name);
     if (item.isDirectory) {
       loadDirectory(item.path);
@@ -253,6 +255,7 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
   };
 
   const handleCreateFolderSubmit = async (folderName: string) => {
+    if (transferRef.current) return;
     setError('');
     try {
       await invoke('create_sftp_directory', {
@@ -260,85 +263,45 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
         parentPath: currentPath,
         folderName
       });
-      await loadDirectory(currentPath);
+      await loadDirectory(currentPath, undefined, true);
     } catch (err: any) {
-      setError(typeof err === 'string' ? err : (err?.message || String(err)));
-    }
-  };
-
-  const uploadFile = async (relativePath: string, content: number[], overwrite: boolean) => {
-    await invoke('upload_sftp_file', {
-      ...sessionArgs(),
-      parentPath: currentPath,
-      relativePath,
-      content,
-      overwrite
-    });
-  };
-
-  const uploadEntries = async (entries: UploadEntry[], directories: string[]) => {
-    if (transfer || (entries.length === 0 && directories.length === 0)) return;
-    const oversized = entries.find(({ file }) => file.size > MAX_TRANSFER_BYTES);
-    if (oversized) {
-      setError(lang === 'zh' ? '单个上传文件不能超过 64 MB' : 'A single upload cannot exceed 64 MB');
-      return;
-    }
-
-    setError('');
-    let completed = 0;
-    try {
-      if (directories.length > 0) {
-        setTransfer({ kind: 'upload', fileName: directories[0], completed, total: entries.length });
-        await invoke('create_sftp_directory_tree', {
-          ...sessionArgs(),
-          parentPath: currentPath,
-          directories
-        });
+      if (!isTransferCancelled(err)) {
+        setError(typeof err === 'string' ? err : (err?.message || String(err)));
       }
-
-      for (const { file, relativePath } of entries) {
-        setTransfer({ kind: 'upload', fileName: relativePath, completed, total: entries.length });
-        const content = Array.from(new Uint8Array(await file.arrayBuffer()));
-        try {
-          await uploadFile(relativePath, content, false);
-        } catch (err: any) {
-          const message = typeof err === 'string' ? err : (err?.message || String(err));
-          if (!message.startsWith('SFTP_FILE_EXISTS:')) throw err;
-
-          const shouldOverwrite = await askConfirmation(
-            lang === 'zh'
-              ? `远程目录中已存在 ${relativePath}，是否覆盖？`
-              : `${relativePath} already exists remotely. Overwrite it?`,
-            lang === 'zh' ? '覆盖文件确认' : 'Confirm File Overwrite'
-          );
-          if (!shouldOverwrite) continue;
-          await uploadFile(relativePath, content, true);
-        }
-        completed += 1;
-      }
-      await loadDirectory(currentPath);
-    } catch (err: any) {
-      const message = typeof err === 'string' ? err : (err?.message || String(err));
-      setError(completed > 0 && lang === 'zh' ? `已上传 ${completed} 个文件，随后失败：${message}` : message);
-    } finally {
-      setTransfer(null);
     }
   };
 
   const uploadLocalPaths = async (paths: string[]) => {
-    if (transfer || paths.length === 0) return;
+    if (paths.length === 0) return;
     const label = paths.length === 1
       ? paths[0].split(/[\\/]/).pop() || paths[0]
       : (lang === 'zh' ? `${paths.length} 个项目` : `${paths.length} items`);
-    setTransfer({ kind: 'upload', fileName: label });
+    if (!beginTransfer({ kind: 'upload', fileName: label, completed: 0, total: 0 })) return;
+    const uploadParentPath = currentPath;
+    let activeTaskId: string | undefined;
     setError('');
     try {
-      const invokeUpload = (overwrite: boolean) => invoke<SftpUploadBatchResult>('upload_sftp_local_paths', {
-        ...sessionArgs(),
-        parentPath: currentPath,
-        localPaths: paths,
-        overwrite
-      });
+      const invokeUpload = (overwrite: boolean) => {
+        const taskId = crypto.randomUUID();
+        activeTaskId = taskId;
+        const onEvent = new Channel<SftpTransferEvent>();
+        onEvent.onmessage = event => updateTransfer(taskId, current => ({
+          ...current,
+          taskId,
+          fileName: event.fileName,
+          completed: event.transferred,
+          total: event.total
+        }));
+        replaceTransfer({ kind: 'upload', fileName: label, taskId, completed: 0, total: 0 });
+        return invoke<SftpUploadBatchResult>('upload_sftp_local_paths', {
+          ...sessionArgs(),
+          taskId,
+          parentPath: uploadParentPath,
+          localPaths: paths,
+          overwrite,
+          onEvent
+        });
+      };
       try {
         await invokeUpload(false);
       } catch (err: any) {
@@ -354,11 +317,13 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
         if (!shouldOverwrite) return;
         await invokeUpload(true);
       }
-      await loadDirectory(currentPath);
+      await loadDirectory(uploadParentPath, undefined, true);
     } catch (err: any) {
-      setError(typeof err === 'string' ? err : (err?.message || String(err)));
+      if (!isTransferCancelled(err)) {
+        setError(typeof err === 'string' ? err : (err?.message || String(err)));
+      }
     } finally {
-      setTransfer(null);
+      finishTransfer(activeTaskId);
     }
   };
 
@@ -403,10 +368,11 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
     };
   }, []);
 
-  const handleUploadSelection = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (file) await uploadEntries([{ file, relativePath: file.name }], []);
+  const selectUploadPaths = async (directory: boolean) => {
+    if (transferRef.current) return;
+    const selected = await open({ multiple: !directory, directory });
+    if (!selected) return;
+    await uploadLocalPaths(Array.isArray(selected) ? selected : [selected]);
   };
 
   const handleDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
@@ -421,69 +387,60 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
     if (dragDepth.current === 0) setIsDragging(false);
   };
 
-  const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     dragDepth.current = 0;
     setIsDragging(false);
-    if (transfer) return;
-
-    const entries: UploadEntry[] = [];
-    const directories: string[] = [];
-    const droppedEntries: DroppedEntry[] = [];
-    try {
-      for (const item of Array.from(event.dataTransfer.items)) {
-        if (item.kind !== 'file') continue;
-        const droppedEntry = (item as DataTransferItem & {
-          webkitGetAsEntry?: () => DroppedEntry | null;
-        }).webkitGetAsEntry?.();
-        if (droppedEntry) {
-          droppedEntries.push(droppedEntry);
-        } else {
-          const file = item.getAsFile();
-          if (file) entries.push({ file, relativePath: file.name });
-        }
-      }
-      for (const droppedEntry of droppedEntries) {
-        await collectDroppedEntry(droppedEntry, entries, directories);
-      }
-      await uploadEntries(entries, directories);
-    } catch (err: any) {
-      setError(typeof err === 'string' ? err : (err?.message || String(err)));
-    }
+    // Desktop drops are handled by Tauri's native path event above so every
+    // file and directory uses the same streaming backend path.
   };
 
   const handleDownload = async (file: SFTPItem, event: React.MouseEvent) => {
     event.stopPropagation();
-    if (transfer) return;
+    if (transferRef.current) return;
 
-    setTransfer({ kind: 'download', fileName: file.name });
+    const suggestedName = file.isDirectory ? `${file.name}.tar.gz` : file.name;
+    const localPath = await save({ defaultPath: suggestedName });
+    if (!localPath) return;
+    const taskId = crypto.randomUUID();
+    const onEvent = new Channel<SftpTransferEvent>();
+    onEvent.onmessage = progress => updateTransfer(taskId, current => ({
+      ...current,
+      fileName: progress.fileName,
+      completed: progress.transferred,
+      total: progress.total
+    }));
+    if (!beginTransfer({ kind: 'download', fileName: file.name, taskId, completed: 0, total: file.isDirectory ? 0 : file.size })) return;
     setError('');
     try {
-      const result = await invoke<SftpDownloadResult>(
+      await invoke(
         file.isDirectory ? 'download_sftp_directory' : 'download_sftp_file',
         {
           ...sessionArgs(),
-          path: file.path
+          taskId,
+          path: file.path,
+          localPath,
+          onEvent
         }
       );
-      const blobUrl = URL.createObjectURL(new Blob([new Uint8Array(result.content)], {
-        type: file.isDirectory ? 'application/gzip' : 'application/octet-stream'
-      }));
-      const anchor = document.createElement('a');
-      anchor.href = blobUrl;
-      anchor.download = result.name;
-      anchor.click();
-      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
     } catch (err: any) {
-      setError(typeof err === 'string' ? err : (err?.message || String(err)));
+      if (!isTransferCancelled(err)) {
+        setError(typeof err === 'string' ? err : (err?.message || String(err)));
+      }
     } finally {
-      setTransfer(null);
+      finishTransfer(taskId);
     }
+  };
+
+  const cancelTransfer = () => {
+    const taskId = transferRef.current?.taskId;
+    if (!taskId) return;
+    void invoke('cancel_sftp_transfer', { taskId });
   };
 
   const handleDelete = async (file: SFTPItem, event: React.MouseEvent) => {
     event.stopPropagation();
-    if (transfer) return;
+    if (transferRef.current) return;
 
     const confirmed = await askConfirmation(
       file.isDirectory
@@ -499,7 +456,7 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
     );
     if (!confirmed) return;
 
-    setTransfer({ kind: 'delete', fileName: file.name });
+    if (!beginTransfer({ kind: 'delete', fileName: file.name })) return;
     setError('');
     try {
       await invoke('delete_sftp_path', {
@@ -507,11 +464,11 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
         path: file.path
       });
       setSelectedItem(null);
-      await loadDirectory(currentPath);
+      await loadDirectory(currentPath, undefined, true);
     } catch (err: any) {
       setError(typeof err === 'string' ? err : (err?.message || String(err)));
     } finally {
-      setTransfer(null);
+      finishTransfer();
     }
   };
 
@@ -552,6 +509,7 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
         <div className="flex items-center gap-1">
           <button
             onClick={() => setIsNewFolderModalOpen(true)}
+            disabled={Boolean(transfer)}
             className={`px-1.5 py-0.5 border rounded transition-colors text-[10px] ${
               isLight ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50' : 'bg-[#18181c] border-[#27272a] text-zinc-300 hover:text-white'
             }`}
@@ -560,14 +518,25 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
           </button>
 
           <button
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => void selectUploadPaths(false)}
             disabled={Boolean(transfer)}
-            title={lang === 'zh' ? '上传文件到当前远程目录（最大 64 MB）' : 'Upload to this remote directory (64 MB max)'}
+            title={lang === 'zh' ? '流式上传一个或多个文件' : 'Stream one or more files'}
             className={`px-1.5 py-0.5 border rounded text-[10px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
               isLight ? 'bg-slate-900 border-slate-900 text-white hover:bg-slate-800' : 'bg-[#18181c] border-[#27272a] text-zinc-300 hover:text-white'
             }`}
           >
             {transfer?.kind === 'upload' ? (lang === 'zh' ? '上传中' : 'UPLOADING') : t.upload}
+          </button>
+
+          <button
+            onClick={() => void selectUploadPaths(true)}
+            disabled={Boolean(transfer)}
+            title={lang === 'zh' ? '流式上传整个目录' : 'Stream a folder'}
+            className={`p-1 border rounded transition-colors disabled:opacity-50 ${
+              isLight ? 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50' : 'bg-[#18181c] border-[#27272a] text-zinc-400 hover:text-white'
+            }`}
+          >
+            <FolderUp className="w-3 h-3" />
           </button>
 
           <button
@@ -586,8 +555,8 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
           </button>
 
           <button
-            onClick={() => loadDirectory(currentPath)}
-            disabled={isLoading}
+            onClick={() => loadDirectory(currentPath, undefined, true)}
+            disabled={isLoading || Boolean(transfer)}
             className={`p-1 border rounded ${
               isLight ? 'bg-white border-slate-300 text-slate-500 hover:text-slate-800' : 'bg-[#18181c] border-[#27272a] text-zinc-500 hover:text-zinc-300'
             }`}
@@ -611,15 +580,29 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
           isLight ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-blue-950/30 border-blue-900 text-blue-300'
         }`}>
           <Loader2 className="w-3 h-3 animate-spin shrink-0" />
-          <span className="truncate">
+          <div className="min-w-0 flex-1">
+          <span className="block truncate">
             {transfer.kind === 'upload'
               ? (lang === 'zh'
-                ? `正在上传 ${transfer.fileName}${transfer.total ? `（${transfer.completed}/${transfer.total}）` : ''}`
-                : `Uploading ${transfer.fileName}${transfer.total ? ` (${transfer.completed}/${transfer.total}）` : ''}`)
+                ? `正在上传 ${transfer.fileName}${transfer.total ? `（${formatTransferSize(transfer.completed || 0)} / ${formatTransferSize(transfer.total)}）` : ''}`
+                : `Uploading ${transfer.fileName}${transfer.total ? ` (${formatTransferSize(transfer.completed || 0)} / ${formatTransferSize(transfer.total)})` : ''}`)
               : transfer.kind === 'download'
-                ? (lang === 'zh' ? `正在下载 ${transfer.fileName}` : `Downloading ${transfer.fileName}`)
+                ? (lang === 'zh'
+                  ? `正在下载 ${transfer.fileName}${transfer.total ? `（${formatTransferSize(transfer.completed || 0)} / ${formatTransferSize(transfer.total)}）` : ''}`
+                  : `Downloading ${transfer.fileName}${transfer.total ? ` (${formatTransferSize(transfer.completed || 0)} / ${formatTransferSize(transfer.total)})` : ''}`)
                 : (lang === 'zh' ? `正在删除 ${transfer.fileName}` : `Deleting ${transfer.fileName}`)}
           </span>
+          {transfer.total ? (
+            <div className="mt-1 h-1 overflow-hidden rounded bg-current/15">
+              <div className="h-full bg-current transition-[width]" style={{ width: `${Math.min(100, ((transfer.completed || 0) / transfer.total) * 100)}%` }} />
+            </div>
+          ) : null}
+          </div>
+          {transfer.taskId && (
+            <button onClick={cancelTransfer} className="rounded p-0.5 hover:bg-current/10" title={lang === 'zh' ? '取消传输' : 'Cancel transfer'}>
+              <X className="h-3 w-3" />
+            </button>
+          )}
         </div>
       )}
 
@@ -700,13 +683,6 @@ export const SFTPManager: React.FC<SFTPManagerProps> = ({ server, theme = 'dark'
           </tbody>
         </table>
       </div>
-
-      <input
-        ref={fileInputRef}
-        type="file"
-        className="hidden"
-        onChange={handleUploadSelection}
-      />
 
       <NewFolderModal
         isOpen={isNewFolderModalOpen}

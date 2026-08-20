@@ -20,6 +20,7 @@ export interface SessionTab {
   host: string;
   connected: boolean;
   activeView: 'terminal' | 'sftp' | 'both';
+  sftpOpened?: boolean;
   createdAt: number;
 }
 
@@ -74,4 +75,3 @@ export interface AIConfig {
   baseUrl: string;
   model: string;
 }
-

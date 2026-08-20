@@ -1,19 +1,19 @@
 {
-  "version": "0.0.6",
-  "notes": "uShell v0.0.6 正式版更新：支持一键下载唤起系统默认安装包升级、全平台自动化编译发布与 UI 修复。",
-  "pub_date": "2026-08-11T16:52:00Z",
+  "version": "0.0.7",
+  "notes": "uShell v0.0.7：完善已信任主机管理、SFTP 大文件流式传输、命令历史与常用命令，并增强传输和凭据安全性。",
+  "pub_date": "2026-08-20T03:17:21.361Z",
   "platforms": {
     "windows-x86_64": {
       "signature": "",
-      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.6/uShell_0.0.6_x64-setup.exe"
+      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.7/uShell_0.0.7_x64-setup.exe"
     },
     "darwin-aarch64": {
       "signature": "",
-      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.6/uShell_0.0.6_aarch64.dmg"
+      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.7/uShell_0.0.7_aarch64.dmg"
     },
     "darwin-x86_64": {
       "signature": "",
-      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.6/uShell_0.0.6_x64.dmg"
+      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.7/uShell_0.0.7_x64.dmg"
     }
   }
 }
