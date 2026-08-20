@@ -58,10 +58,17 @@ jobs:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY_SECRET: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID_SECRET: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD_SECRET: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID_SECRET: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           if [ -z "$APPLE_CERTIFICATE" ]; then
-            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            echo "No Apple certificate configured; building an unsigned macOS bundle."
             exit 0
+          fi
+          if [ -z "$APPLE_CERTIFICATE_PASSWORD" ] || [ -z "$APPLE_SIGNING_IDENTITY_SECRET" ]; then
+            echo "::error title=Incomplete macOS signing configuration::APPLE_CERTIFICATE_PASSWORD and APPLE_SIGNING_IDENTITY are required when APPLE_CERTIFICATE is set."
+            exit 1
           fi
           CERTIFICATE_PATH="$RUNNER_TEMP/ushell-certificate.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/ushell-signing.keychain-db"
@@ -74,6 +81,13 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
           echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY_SECRET" >> "$GITHUB_ENV"
+          if [ -n "$APPLE_ID_SECRET" ] && [ -n "$APPLE_PASSWORD_SECRET" ] && [ -n "$APPLE_TEAM_ID_SECRET" ]; then
+            echo "APPLE_ID=$APPLE_ID_SECRET" >> "$GITHUB_ENV"
+            echo "APPLE_PASSWORD=$APPLE_PASSWORD_SECRET" >> "$GITHUB_ENV"
+            echo "APPLE_TEAM_ID=$APPLE_TEAM_ID_SECRET" >> "$GITHUB_ENV"
+          else
+            echo "Apple notarization credentials are incomplete; signing without notarization."
+          fi
 
       - name: Configure Windows Signing
         if: runner.os == 'Windows'
@@ -97,13 +111,22 @@ jobs:
           $config.bundle | Add-Member -Force -NotePropertyName windows -NotePropertyValue $windowsSigning
           $config | ConvertTo-Json -Depth 20 | Set-Content -Encoding utf8 $configPath
 
+      - name: Check Rust Target
+        shell: bash
+        run: |
+          set +e
+          cargo check --manifest-path src-tauri/Cargo.toml --target "${{ matrix.target }}" 2>&1 | tee "$RUNNER_TEMP/cargo-check.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            details=$(tail -n 30 "$RUNNER_TEMP/cargo-check.log" | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g')
+            echo "::error title=Rust target check failed::$details"
+          fi
+          exit "$status"
+
       - name: Build and Publish Release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'uShell ${{ github.ref_name }}'

@@ -1,19 +1,19 @@
 {
-  "version": "0.0.7",
-  "notes": "uShell v0.0.7：完善已信任主机管理、SFTP 大文件流式传输、命令历史与常用命令，并增强传输和凭据安全性。",
-  "pub_date": "2026-08-20T03:17:21.361Z",
+  "version": "0.0.8",
+  "notes": "uShell v0.0.8：完善已信任主机管理、SFTP 大文件流式传输、命令历史与常用命令，并修复 macOS 云打包。",
+  "pub_date": "2026-08-20T03:33:00.000Z",
   "platforms": {
     "windows-x86_64": {
       "signature": "",
-      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.7/uShell_0.0.7_x64-setup.exe"
+      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.8/uShell_0.0.8_x64-setup.exe"
     },
     "darwin-aarch64": {
       "signature": "",
-      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.7/uShell_0.0.7_aarch64.dmg"
+      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.8/uShell_0.0.8_aarch64.dmg"
     },
     "darwin-x86_64": {
       "signature": "",
-      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.7/uShell_0.0.7_x64.dmg"
+      "url": "https://github.com/AuCf/ushell/releases/download/v0.0.8/uShell_0.0.8_x64.dmg"
     }
   }
 }
